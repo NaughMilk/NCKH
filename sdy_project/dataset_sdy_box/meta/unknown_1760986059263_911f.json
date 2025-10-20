@@ -1,0 +1,49 @@
+{
+  "qr": {
+    "qr_raw": "Box: BOX-7EAYEV\nTangerine: 4\n",
+    "parsed": {
+      "_qr": "Box: BOX-7EAYEV\nTangerine: 4"
+    }
+  },
+  "gdino_phrases": [
+    "box"
+  ],
+  "bbox": [
+    107,
+    81,
+    639,
+    746
+  ],
+  "yolo_detections": [
+    {
+      "class_id": 0,
+      "class_name": "box",
+      "bbox": [
+        0.46508728179551123,
+        0.516875,
+        0.6633416458852868,
+        0.83125
+      ],
+      "confidence": 1.0,
+      "phrase": "box"
+    }
+  ],
+  "white_ring_annotations": [
+    {
+      "bbox": [
+        90,
+        59,
+        565,
+        697
+      ],
+      "category_id": 1,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "box_id": null,
+  "mask_pixels": 371502,
+  "mask_ratio": 0.5790243142144639,
+  "num_detections": 1,
+  "processing_time_ms": 1378.3268928527832
+}

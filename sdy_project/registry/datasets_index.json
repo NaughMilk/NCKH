@@ -1,0 +1,26 @@
+{
+  "yolo": [
+    {
+      "session_id": "current_dataset",
+      "path": "D:\\NCKH CODE\\PIPELINE ORIGINAL\\sdy_project\\dataset_sdy_box",
+      "created_at": 1760986059.2809215,
+      "items": 1,
+      "meta": {
+        "supplier_id": "",
+        "created_by": "DSYDataset"
+      }
+    }
+  ],
+  "u2net": [
+    {
+      "session_id": "current_dataset",
+      "path": "D:\\NCKH CODE\\PIPELINE ORIGINAL\\sdy_project\\dataset_sdy_box",
+      "created_at": 1760986059.287425,
+      "items": 1,
+      "meta": {
+        "supplier_id": "",
+        "created_by": "DSYDataset"
+      }
+    }
+  ]
+}
