@@ -46,7 +46,7 @@ def train_sdy(self, data_yaml: str, continue_if_exists: bool = True, resume_from
     
     # FIXED: Validate dataset before training
     _log_info("YOLO Training", "Starting YOLO training with dataset validation...")
-    if not validate_dataset_before_training(data_yaml):
+    if not self.validate_dataset_before_training(data_yaml):
         _log_error("YOLO Training", "Dataset validation failed - aborting training")
         return None, None
     
@@ -54,7 +54,7 @@ def train_sdy(self, data_yaml: str, continue_if_exists: bool = True, resume_from
     _log_info("YOLO Training", "Configuring training parameters to prevent loss calculation issues...")
     
     # FIXED: Check for common training issues
-    if not _check_training_environment():
+    if not self._check_training_environment():
         _log_error("YOLO Training", "Training environment check failed - aborting training")
         return None, None
     
@@ -132,7 +132,7 @@ def train_sdy(self, data_yaml: str, continue_if_exists: bool = True, resume_from
         results = model.train(**train_args)
     
         # Generate training curves and metrics
-        _generate_yolo_metrics(save_dir, results)
+        self._generate_yolo_metrics(save_dir, results)
         
         # Training completed successfully
         training_time = time.time() - start_time
@@ -148,7 +148,7 @@ def train_sdy(self, data_yaml: str, continue_if_exists: bool = True, resume_from
         # Restore CUDA logging
         _suppress_all_cuda_logs = False
 
-def _generate_yolo_metrics(save_dir: str, results):
+def _generate_yolo_metrics(self, save_dir: str, results):
     """Generate YOLO training metrics and visualizations"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -378,18 +378,18 @@ def train_u2net(self, continue_if_exists: bool = True, resume_from: str = None):
             torch.save(net.state_dict(), best_path)
             _log_success("U²-Net Training", f"New best model saved: {best_path}")
     
-    # Generate metrics and plots
-    _generate_u2net_metrics(save_dir, training_metrics, net, val_loader, device)
-    
-    # Export ONNX
-    onnx_path = _export_u2net_onnx(net, best_path, save_dir)
+        # Generate metrics and plots
+        self._generate_u2net_metrics(save_dir, training_metrics, net, val_loader, device)
+        
+        # Export ONNX
+        onnx_path = self._export_u2net_onnx(net, best_path, save_dir)
     
     training_time = time.time() - start_time
     _log_success("U²-Net Training", f"Training completed in {training_time:.1f} seconds")
     
     return net, training_metrics
 
-def _export_u2net_onnx(net, best_path: str, run_dir: str) -> str:
+def _export_u2net_onnx(self, net, best_path: str, run_dir: str) -> str:
     """Export U²-Net model to ONNX format"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -442,7 +442,7 @@ def _export_u2net_onnx(net, best_path: str, run_dir: str) -> str:
         _log_error("U²-Net Export", e, "Failed to export ONNX model")
         return None
 
-def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loader, device):
+def _generate_u2net_metrics(self, run_dir: str, training_metrics: dict, model, val_loader, device):
     """Generate U²-Net training metrics and visualizations"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -458,23 +458,23 @@ def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loa
         os.makedirs(metrics_dir, exist_ok=True)
         
         # Plot training curves
-        _plot_training_curves(metrics_dir, training_metrics)
+        self._plot_training_curves(metrics_dir, training_metrics)
         
         # Plot confusion matrix
-        _plot_confusion_matrix(metrics_dir, model, val_loader, device)
+        self._plot_confusion_matrix(metrics_dir, model, val_loader, device)
         
         # Plot batch samples
-        _plot_batch_samples(metrics_dir, model, val_loader, device)
+        self._plot_batch_samples(metrics_dir, model, val_loader, device)
         
         # Save metrics summary
-        _save_metrics_summary(run_dir, training_metrics)
+        self._save_metrics_summary(run_dir, training_metrics)
         
         _log_success("U²-Net Metrics", f"Metrics generated in {metrics_dir}")
         
     except Exception as e:
         _log_info("U²-Net Metrics", f"Failed to generate metrics: {e}")
 
-def _plot_training_curves(plots_dir: str, training_metrics: dict):
+def _plot_training_curves(self, plots_dir: str, training_metrics: dict):
     """Plot training curves for U²-Net"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -515,7 +515,7 @@ def _plot_training_curves(plots_dir: str, training_metrics: dict):
     except Exception as e:
         _log_info("U²-Net Metrics", f"Failed to plot training curves: {e}")
 
-def _plot_confusion_matrix(plots_dir: str, model, val_loader, device):
+def _plot_confusion_matrix(self, plots_dir: str, model, val_loader, device):
     """Plot confusion matrix for U²-Net"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -563,7 +563,7 @@ def _plot_confusion_matrix(plots_dir: str, model, val_loader, device):
     except Exception as e:
         _log_info("U²-Net Metrics", f"Failed to plot confusion matrix: {e}")
 
-def _plot_batch_samples(plots_dir: str, model, val_loader, device):
+def _plot_batch_samples(self, plots_dir: str, model, val_loader, device):
     """Plot batch samples for U²-Net"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -615,7 +615,7 @@ def _plot_batch_samples(plots_dir: str, model, val_loader, device):
     except Exception as e:
         _log_info("U²-Net Metrics", f"Failed to plot batch samples: {e}")
 
-def _save_metrics_summary(run_dir: str, training_metrics: dict):
+def _save_metrics_summary(self, run_dir: str, training_metrics: dict):
     """Save metrics summary for U²-Net"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:

@@ -7,7 +7,7 @@ import torch
 from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 
-def validate_dataset_before_training(data_yaml: str) -> bool:
+def validate_dataset_before_training(self, data_yaml: str) -> bool:
     """Validate dataset before training"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
@@ -105,7 +105,7 @@ def validate_dataset_before_training(data_yaml: str) -> bool:
         _log_error("Dataset Validation", e, "Failed to validate dataset")
         return False
 
-def _check_training_environment():
+def _check_training_environment(self):
     """Check if training environment is ready"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:

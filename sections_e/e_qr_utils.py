@@ -1,25 +1,40 @@
 import json
 from typing import Dict, Any, List, Tuple
 
-def parse_qr_payload(s: str) -> Dict[str, Any]:
-    """Parse QR code payload string into dictionary"""
+def parse_qr_payload(qr_id: str) -> Dict[str, Any]:
+    """Parse QR ID and load metadata from file system"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
-        from sections_a.a_config import _log_info, _log_warning
+        from sections_a.a_config import _log_info, _log_warning, CFG
+        import os
+        import json
     except ImportError:
         # Fallback if log functions not available yet
         def _log_info(context, message): print(f"[INFO] {context}: {message}")
         def _log_warning(context, message): print(f"[WARN] {context}: {message}")
+        class CFG:
+            project_dir = "sdy_project"
+        import os
+        import json
     
     try:
-        data = json.loads(s)
-        _log_info("QR Parser", f"Parsed QR payload: {len(data)} fields")
-        return data
+        # Load metadata from file system using QR ID
+        meta_file = os.path.join(CFG.project_dir, "qr_meta", qr_id, f"{qr_id}.json")
+        
+        if os.path.exists(meta_file):
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            _log_info("QR Parser", f"Loaded metadata for QR ID: {qr_id}")
+            return metadata
+        else:
+            _log_warning("QR Parser", f"Metadata file not found for QR ID: {qr_id}")
+            return {}
+            
     except json.JSONDecodeError as e:
-        _log_warning("QR Parser", f"Failed to parse QR payload: {e}")
+        _log_warning("QR Parser", f"Failed to parse QR metadata: {e}")
         return {}
     except Exception as e:
-        _log_warning("QR Parser", f"Unexpected error parsing QR: {e}")
+        _log_warning("QR Parser", f"Unexpected error loading QR metadata: {e}")
         return {}
 
 def check_hand_detection(detected_phrases: List[str]) -> Tuple[bool, str]:
@@ -58,24 +73,29 @@ def validate_qr_detection(qr_items: Dict[str, int], detected_phrases: List[str])
         _log_warning("QR Validation", "No detected phrases to validate against")
         return False, "No detected phrases"
     
-    # Check for matches
-    matches = 0
-    total_qr_items = len(qr_items)
+    # Count total QR items (including quantity)
+    total_qr_count = sum(qr_items.values())
+    detected_count = 0
     
-    for qr_item in qr_items.keys():
+    # Count detected items by fruit type
+    for qr_item, qr_quantity in qr_items.items():
+        item_detected_count = 0
         for phrase in detected_phrases:
             if qr_item.lower() in phrase.lower():
-                matches += 1
-                break
+                item_detected_count += 1
+        
+        # Take minimum of QR quantity and detected count
+        detected_count += min(item_detected_count, qr_quantity)
     
-    match_ratio = matches / total_qr_items if total_qr_items > 0 else 0
+    match_ratio = detected_count / total_qr_count if total_qr_count > 0 else 0
     
-    if match_ratio >= 0.5:  # At least 50% match
-        _log_info("QR Validation", f"QR validation passed: {matches}/{total_qr_items} matches")
-        return True, f"Validated: {matches}/{total_qr_items} matches"
+    # Require 100% exact match - must detect exactly the same quantity as QR
+    if detected_count == total_qr_count:
+        _log_info("QR Validation", f"QR validation passed: {detected_count}/{total_qr_count} items detected (100% match)")
+        return True, f"Validated: {detected_count}/{total_qr_count} items detected (100% match)"
     else:
-        _log_warning("QR Validation", f"QR validation failed: {matches}/{total_qr_items} matches")
-        return False, f"Validation failed: {matches}/{total_qr_items} matches"
+        _log_warning("QR Validation", f"QR validation failed: {detected_count}/{total_qr_count} items detected (need 100% match)")
+        return False, f"Validation failed: {detected_count}/{total_qr_count} items detected (need 100% match)"
 
 def validate_qr_yolo_match(qr_items: Dict[str, int], yolo_detections: List[Dict]) -> Dict[str, Any]:
     """Validate QR items against YOLO detections"""

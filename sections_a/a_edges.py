@@ -117,10 +117,20 @@ class EdgeBackend:
                 self._cpu_mode_shown = True
             
     def detect(self, bgr, backend, canny_lo, canny_hi, dexi_thr):
-        if self.dexi and self.dexi.available():
+        if backend=="DexiNed" and self.dexi and self.dexi.available():
             return self.dexi.detect(bgr, thresh=dexi_thr)
-        # No Canny fallback: force DexiNed-only path
-        raise RuntimeError("DexiNed backend not available. Please provide ONNX or torch weights.")
+        # fallback: Canny trên ảnh đã chuẩn hoá
+        gray = preprocess_gpu(bgr, use_gpu=self.use_gpu)
+        return auto_canny(gray, canny_lo, canny_hi)
+
+# ---------- Canny (fallback) ----------
+def auto_canny(img, low, high):
+    if low>0 and high>0:
+        return cv2.Canny(img, low, high)
+    v = np.median(img); sigma=0.33
+    lo = int(max(5, (1.0 - sigma) * v))
+    hi = int(min(255, (1.0 + sigma) * v))
+    return cv2.Canny(img, lo, hi)
 
 # Global EdgeBackend instance
 EDGE = EdgeBackend()

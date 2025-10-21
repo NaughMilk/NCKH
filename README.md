@@ -1,77 +1,61 @@
-# NCC Pipeline - Modular Computer Vision System
+# 🚀 SDY Pipeline - Smart Dataset & Training System
 
-## Overview
-This repository contains a modular computer vision pipeline for object detection, segmentation, and QR code processing. The system has been refactored from a monolithic structure into organized, maintainable modules.
+Complete end-to-end pipeline for dataset creation and model training.
 
-## Project Structure
+## 🎯 Quick Start
 
-### Core Sections
-- **Section A**: Configuration and utilities (`sections_a/`)
-- **Section B**: GroundingDINO wrapper (`sections_b/`)
-- **Section C**: Background removal (`sections_c/`)
-- **Section D**: U²-Net architecture (`sections_d/`)
-- **Section E**: QR code helpers (`sections_e/`)
-- **Section F**: Dataset writer (`sections_f/`)
-- **Section G**: SDY pipeline (`sections_g/`)
-- **Section H**: Warehouse checker (`sections_h/`)
-- **Section I**: UI handlers (`sections_i/`)
-- **Section J**: UI build and launch (`sections_j/`)
+### Option 1: Double-click to run
+- **Windows**: Double-click `run.bat`
+- **PowerShell**: Right-click `run.ps1` → "Run with PowerShell"
 
-### Key Features
-- **Modular Architecture**: Clean separation of concerns
-- **Object Detection**: GroundingDINO integration
-- **Background Removal**: U²-Net variants
-- **QR Code Processing**: Detection and generation
-- **Dataset Management**: YOLO and U²-Net formats
-- **Training Pipeline**: Automated model training
-- **Gradio UI**: User-friendly interface
-
-## Installation
-
-### Prerequisites
-- Python 3.8+
-- PyTorch
-- OpenCV
-- Ultralytics
-- Gradio
-
-### Dependencies
+### Option 2: Command line
 ```bash
-pip install torch torchvision
-pip install opencv-python
-pip install ultralytics
-pip install gradio
-pip install qrcode
-pip install pyzbar
-pip install rembg
-pip install matplotlib seaborn
+# Launch UI (default)
+python main.py
+
+# Run test only
+python main.py --test
+
+# Show help
+python main.py --help
 ```
 
-## Usage
+## 📦 Features
 
-### Running the Pipeline
-```bash
-python run_pipeline.py --test
+- **Dataset Creation**: GroundingDINO + QR validation + Background Removal
+- **Model Training**: YOLOv8 (detection) + U²-Net (segmentation)
+- **Warehouse Check**: QR decode + YOLO detect + U²-Net segment
+- **QR Generation**: Generate QR codes with metadata
+- **Advanced Settings**: Configurable parameters
+
+## 🗂️ Project Structure
+
+```
+PIPELINE ORIGINAL/
+├── main.py                 # Main runner
+├── run.bat                # Windows batch script
+├── run.ps1                # PowerShell script
+├── sections_a/           # Section A - Config & Utils
+├── sections_b/           # Section B - GroundingDINO
+├── sections_c/           # Section C - Background Removal
+├── sections_d/           # Section D - U²-Net Architecture
+├── sections_e/           # Section E - QR Helpers
+├── sections_f/           # Section F - Dataset Writer
+├── sections_g/           # Section G - SDY Pipeline
+├── sections_h/           # Section H - Warehouse Checker
+├── sections_i/           # Section I - UI Handlers
+└── sections_j/           # Section J - UI Builder
 ```
 
-### Launching the UI
-```bash
-python run_pipeline.py --ui
-```
+## 🚀 Usage
 
-## Configuration
-The system uses a centralized configuration system in `sections_a/a_config.py`. Key parameters include:
-- Model paths and settings
-- Training parameters
-- GPU/CPU preferences
-- Dataset configurations
+1. **Double-click `run.bat`** (Windows) hoặc **`run.ps1`** (PowerShell)
+2. **Hoặc chạy**: `python main.py`
+3. **UI sẽ tự động mở** trong browser
+4. **Sử dụng các tabs**: Dataset, Training, QR, Warehouse
 
-## Development
-Each section is independently maintainable with clear interfaces and dependencies. The modular structure allows for:
-- Easy testing of individual components
-- Independent development and updates
-- Clear separation of responsibilities
-- Simplified debugging and maintenance
+## ⚙️ Commands
 
-## License
-This project is part of NCC research work.
+- `python main.py` - Launch UI (default)
+- `python main.py --test` - Run test only
+- `python main.py --help` - Show help

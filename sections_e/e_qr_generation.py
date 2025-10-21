@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
 import qrcode
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
-def generate_qr_code(box_id: str, fruits: Dict[str, int], metadata: Dict[str, Any] = None) -> np.ndarray:
-    """Generate QR code with box and fruit information"""
+def generate_qr_code(qr_id: str) -> np.ndarray:
+    """Generate QR code that contains ONLY QR ID"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
         from sections_a.a_config import _log_info
@@ -12,23 +12,15 @@ def generate_qr_code(box_id: str, fruits: Dict[str, int], metadata: Dict[str, An
         # Fallback if log functions not available yet
         def _log_info(context, message): print(f"[INFO] {context}: {message}")
     
-    # Create payload
-    payload = {
-        "box_id": box_id,
-        "fruits": fruits,
-        "metadata": metadata or {}
-    }
+    # QR only contains the ID
+    qr_text = qr_id
     
-    # Convert to string
-    import json
-    qr_text = json.dumps(payload, ensure_ascii=False)
-    
-    # Generate QR code
+    # Generate QR code - Smaller dots but normal size
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
+        box_size=8,  # Normal size but smaller dots
+        border=3,    # Normal border
     )
     qr.add_data(qr_text)
     qr.make(fit=True)
@@ -37,63 +29,83 @@ def generate_qr_code(box_id: str, fruits: Dict[str, int], metadata: Dict[str, An
     qr_img = qr.make_image(fill_color="black", back_color="white")
     qr_array = np.array(qr_img)
     
-    _log_info("QR Generation", f"Generated QR for box {box_id} with {len(fruits)} fruit types")
+    # Ensure correct dtype and format for Gradio
+    if qr_array.dtype == bool:
+        qr_array = qr_array.astype(np.uint8) * 255
+    
+    if len(qr_array.shape) == 2:
+        qr_array = cv2.cvtColor(qr_array, cv2.COLOR_GRAY2RGB)
+    
+    # Ensure uint8 dtype for Gradio compatibility
+    qr_array = qr_array.astype(np.uint8)
+    
+    _log_info("QR Generation", f"Generated QR with ID: {qr_id}")
     return qr_array
 
 def generate_qr_with_metadata(cfg, box_id: str, fruits: Dict[str, int], 
-                             metadata: Dict[str, Any] = None) -> np.ndarray:
-    """Generate QR code with enhanced metadata and rendering"""
+                             fruit_type: str = "", quantity: int = 0, note: str = "") -> Tuple[np.ndarray, str, str]:
+    """Generate QR with unique id_qr; QR encodes ONLY id_qr; save editable JSON per id"""
     # Import log functions from other modules (will be available after all sections are loaded)
     try:
-        from sections_a.a_config import _log_info
+        from sections_a.a_config import _log_info, _log_success
+        from sections_a.a_utils import generate_unique_box_name, generate_unique_qr_id, ensure_dir, atomic_write_text
     except ImportError:
         # Fallback if log functions not available yet
         def _log_info(context, message): print(f"[INFO] {context}: {message}")
+        def _log_success(context, message): print(f"[SUCCESS] {context}: {message}")
+        def generate_unique_box_name(cfg): return f"BOX-{int(time.time())}"
+        def generate_unique_qr_id(cfg): return f"QR{int(time.time())}"
+        def ensure_dir(path): os.makedirs(path, exist_ok=True)
+        def atomic_write_text(path, text): 
+            with open(path, 'w', encoding='utf-8') as f: f.write(text)
     
-    # Create enhanced payload
-    enhanced_metadata = {
-        "timestamp": cfg.timestamp if hasattr(cfg, 'timestamp') else None,
-        "session_id": cfg.session_id if hasattr(cfg, 'session_id') else None,
-        "version": "1.0",
-        **(metadata or {})
-    }
+    # Generate unique box name if not provided
+    if not box_id or box_id.strip() == "":
+        box_id = generate_unique_box_name(cfg)
+    elif not box_id.startswith(cfg.box_name_prefix):
+        box_id = f"{cfg.box_name_prefix}{box_id}"
     
-    payload = {
-        "box_id": box_id,
+    # Generate unique 6-digit QR id
+    qr_id = generate_unique_qr_id(cfg)
+
+    # Create metadata with detailed format
+    import datetime
+    created_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Get primary fruit name (first fruit with count > 0)
+    fruit_name = ""
+    for name, count in fruits.items():
+        if count > 0:
+            fruit_name = name
+            break
+    
+    metadata = {
+        "id_qr": qr_id,
+        "box_name": box_id,
+        "fruit_name": fruit_name,
+        "quantity": quantity,
         "fruits": fruits,
-        "metadata": enhanced_metadata
+        "note": note,
+        "created_at": created_at
     }
     
-    # Convert to string
+    # Generate QR code (only contains QR ID)
+    qr_image = generate_qr_code(qr_id)
+    
+    # Save metadata to JSON file in sdy_project/qr_meta/{qr_id}/ folder
+    import os
     import json
-    qr_text = json.dumps(payload, ensure_ascii=False)
+    import time
+    qr_folder = os.path.join(cfg.project_dir, "qr_meta", qr_id)
+    ensure_dir(qr_folder)
+    meta_file = os.path.join(qr_folder, f"{qr_id}.json")
+    atomic_write_text(meta_file, json.dumps(metadata, ensure_ascii=False, indent=2))
     
-    # Generate QR code with higher error correction
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=12,
-        border=4,
-    )
-    qr.add_data(qr_text)
-    qr.make(fit=True)
+    # Create QR content string for display
+    qr_content = json.dumps(metadata, ensure_ascii=False, indent=2)
     
-    # Create image
-    qr_img = qr.make_image(fill_color="black", back_color="white")
-    qr_array = np.array(qr_img)
-    
-    # Convert to RGB for better rendering
-    qr_rgb = cv2.cvtColor(qr_array, cv2.COLOR_GRAY2RGB)
-    
-    # Add caption with box name and fruit info
-    box_name = f"Box {box_id}"
-    fruit_type_str = ", ".join([f"{k}: {v}" for k, v in fruits.items()])
-    total_qty = sum(fruits.values())
-    
-    qr_with_caption = _render_qr_with_caption(qr_rgb, box_name, fruit_type_str, total_qty)
-    
-    _log_info("QR Generation", f"Generated enhanced QR for box {box_id} with {len(fruits)} fruit types")
-    return qr_with_caption
+    _log_success("QR Generation", f"Generated QR {qr_id} for box {box_id}")
+    return qr_image, qr_content, meta_file
 
 def _render_qr_with_caption(qr_rgb: np.ndarray, box_name: str, fruit_type_str: str, total_qty: int) -> np.ndarray:
     """Render QR code with caption text"""

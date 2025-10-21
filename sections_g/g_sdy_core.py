@@ -7,27 +7,32 @@ import torch
 from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 
+# Import dependencies
+from sections_b.b_gdino import GDINO
+from sections_e.e_qr_detection import QR
+from sections_c.c_bg_removal import BGRemovalWrap
+from sections_a.a_config import _log_info, _log_success, _log_error, _log_warning
+from sections_a.a_utils import ensure_dir, make_session_id
+
+# Import processing methods
+from .g_processing import (
+    process_frame, 
+    _save_rejected_image,
+    _pick_box_bbox,
+    _to_pixel_xyxy,
+    _get_fruit_class_id,
+    _get_class_id_for_fruit,
+    update_class_names,
+    _create_gdino_visualization,
+    _to_normalized_xyxy
+)
+
 class SDYPipeline:
     """Main pipeline for dataset creation and training"""
     def __init__(self, cfg, session_id: str = None, supplier_id: str = None):
-        # Import log functions from other modules (will be available after all sections are loaded)
-        try:
-            from sections_a.a_config import _log_info, _log_success, _log_warning, _log_error, ensure_dir
-            from sections_e.e_qr_detection import QR
-            from sections_b.b_gdino import GDINO
-            from sections_c.c_bg_removal import BGRemovalWrap
-            from sections_f.f_yolo_dataset import DSYDataset
-        except ImportError:
-            # Fallback if log functions not available yet
-            def _log_info(context, message): print(f"[INFO] {context}: {message}")
-            def _log_success(context, message): print(f"[SUCCESS] {context}: {message}")
-            def _log_warning(context, message): print(f"[WARN] {context}: {message}")
-            def _log_error(context, error, details=""): print(f"[ERROR] {context}: {error} - {details}")
-            def ensure_dir(path): os.makedirs(path, exist_ok=True)
-            class QR: pass
-            class GDINO: pass
-            class BGRemovalWrap: pass
-            class DSYDataset: pass
+        # Generate session ID if not provided
+        if session_id is None:
+            session_id = make_session_id()
         
         self.cfg = cfg
         self.session_id = session_id
@@ -43,6 +48,8 @@ class SDYPipeline:
             _log_info("Pipeline Init", f"Using {cfg.bg_removal_model} for segmentation")
             self.bg_removal = BGRemovalWrap(cfg)
         
+        # Import DSYDataset here to avoid circular import
+        from sections_f.f_yolo_dataset import DSYDataset
         self.ds = DSYDataset(cfg, session_id, supplier_id)
         # FIXED: Set generic fruit ID to match dataset
         self.generic_fruit_id = len(self.ds.class_names) - 1  # 21
@@ -67,3 +74,39 @@ class SDYPipeline:
         self.rejected_samples = 0
         
         _log_success("Pipeline Init", "SDY Pipeline ready for processing")
+    
+    def process_frame(self, frame_bgr: np.ndarray, preview_only: bool = False, save_dataset: bool = True, return_both_visualizations: bool = False):
+        """Process a single frame through the pipeline"""
+        return process_frame(self, frame_bgr, preview_only, save_dataset, return_both_visualizations)
+    
+    def _save_rejected_image(self, frame_bgr, boxes, phrases, selected_bbox, reason):
+        """Save rejected image for debugging"""
+        return _save_rejected_image(self, frame_bgr, boxes, phrases, selected_bbox, reason)
+    
+    def _pick_box_bbox(self, boxes, phrases, qr_points, img_shape):
+        """Pick the best box bbox based on QR points"""
+        return _pick_box_bbox(self, boxes, phrases, qr_points, img_shape)
+    
+    def _to_pixel_xyxy(self, boxes_tensor, img_w, img_h):
+        """Convert normalized boxes to pixel coordinates"""
+        return _to_pixel_xyxy(self, boxes_tensor, img_w, img_h)
+    
+    def _get_fruit_class_id(self, phrase: str, qr_items_dict: Dict[str, int]) -> int:
+        """Get class ID for fruit based on phrase and QR items"""
+        return _get_fruit_class_id(self, phrase, qr_items_dict)
+    
+    def _get_class_id_for_fruit(self, fruit_name: str) -> int:
+        """Get class ID for fruit name"""
+        return _get_class_id_for_fruit(self, fruit_name)
+    
+    def update_class_names(self):
+        """Update class names in dataset"""
+        return update_class_names(self)
+    
+    def _create_gdino_visualization(self, img_resized, boxes_original, logits, phrases):
+        """Create GroundingDINO visualization"""
+        return _create_gdino_visualization(self, img_resized, boxes_original, logits, phrases)
+    
+    def _to_normalized_xyxy(self, boxes, img_w, img_h):
+        """Convert pixel boxes to normalized coordinates"""
+        return _to_normalized_xyxy(self, boxes, img_w, img_h)

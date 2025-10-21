@@ -6,23 +6,13 @@ import random
 from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 from .f_dataset_utils import mask_to_polygon_norm
+from sections_j.j_ui_utils import clean_dataset_class_ids
+from sections_a.a_config import _log_info, _log_success, _log_warning, _log_error
+from sections_a.a_utils import ensure_dir, DatasetRegistry
 
 class DSYDataset:
     """Dataset writer for SDY/U²-Net with versioned sessions support"""
     def __init__(self, cfg, session_id: str = None, supplier_id: str = None):
-        # Import log functions from other modules (will be available after all sections are loaded)
-        try:
-            from sections_a.a_config import _log_info, _log_success, _log_warning, _log_error, ensure_dir, DatasetRegistry
-        except ImportError:
-            # Fallback if log functions not available yet
-            def _log_info(context, message): print(f"[INFO] {context}: {message}")
-            def _log_success(context, message): print(f"[SUCCESS] {context}: {message}")
-            def _log_warning(context, message): print(f"[WARN] {context}: {message}")
-            def _log_error(context, error, details=""): print(f"[ERROR] {context}: {error} - {details}")
-            def ensure_dir(path): os.makedirs(path, exist_ok=True)
-            class DatasetRegistry:
-                def __init__(self, project_dir): pass
-        
         self.cfg = cfg
         # FIXED: Use fixed session ID instead of timestamp to avoid creating multiple folders
         self.session_id = session_id or "current_dataset"  # Fixed session ID
@@ -191,6 +181,8 @@ class DSYDataset:
             def save_box_metadata(metadata): pass
         
         try:
+            _log_info("DSYDataset", f"Starting add_sample for box_id: {box_id}")
+            
             # Generate unique box name
             if not box_id:
                 box_id = generate_unique_box_name()
@@ -258,18 +250,20 @@ class DSYDataset:
                         with open(yolo_lab_path, 'a') as f:
                             f.write(f"\n{fruit_line}")
                 
-                # Save metadata
-                metadata = {
-                    'box_id': box_id,
-                    'split': split,
-                    'fruits': fruits or {},
-                    'class_names': self.class_names,
-                    'timestamp': meta.get('timestamp'),
-                    'session_id': self.session_id,
-                    'supplier_id': self.supplier_id
-                }
+                # Save metadata with atomic write (same as NCC_PIPELINE_NEW.py)
+                _log_info("DSYDataset", f"Saving metadata for {box_id}")
+                meta_dir = os.path.join(self.root, "meta")
+                ensure_dir(meta_dir)
+                meta_path = os.path.join(meta_dir, f"{box_id}.json")
                 
-                save_box_metadata(metadata)
+                _log_info("DSYDataset", f"Meta path: {meta_path}")
+                _log_info("DSYDataset", f"Meta content keys: {list(meta.keys()) if meta else 'None'}")
+                
+                # Use atomic_write_text for safe writing
+                from sections_a.a_config import atomic_write_text
+                atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
+                
+                _log_success("DSYDataset", f"Saved metadata JSON: {meta_path}")
                 
                 _log_success("DSYDataset", f"Added sample {box_id} to {split} split")
                 return True
