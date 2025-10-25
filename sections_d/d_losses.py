@@ -7,12 +7,13 @@ class BCEDiceLoss(nn.Module):
         super().__init__()
     
     def forward(self, logits, target):
-        # BCE loss
-        bce = F.binary_cross_entropy(logits, target, reduction='mean')
+        # BCE loss - FIXED: Use BCEWithLogitsLoss for autocast safety
+        bce = F.binary_cross_entropy_with_logits(logits, target, reduction='mean')
         # Dice loss
         smooth = 1e-5
-        intersection = (logits * target).sum()
-        dice = (2. * intersection + smooth) / (logits.sum() + target.sum() + smooth)
+        probs = torch.sigmoid(logits)  # Apply sigmoid for dice calculation
+        intersection = (probs * target).sum()
+        dice = (2. * intersection + smooth) / (probs.sum() + target.sum() + smooth)
         dice_loss = 1 - dice
         return bce + dice_loss
 
@@ -37,13 +38,17 @@ class EdgeLoss(nn.Module):
         else:
             target_gray = target
         
+        # FIXED: Ensure sobel filters match input dtype for autocast compatibility
+        sobel_x = self.sobel_x.to(dtype=pred_gray.dtype, device=pred_gray.device)
+        sobel_y = self.sobel_y.to(dtype=pred_gray.dtype, device=pred_gray.device)
+        
         # Compute edges
-        pred_edges_x = F.conv2d(pred_gray, self.sobel_x, padding=1)
-        pred_edges_y = F.conv2d(pred_gray, self.sobel_y, padding=1)
+        pred_edges_x = F.conv2d(pred_gray, sobel_x, padding=1)
+        pred_edges_y = F.conv2d(pred_gray, sobel_y, padding=1)
         pred_edges = torch.sqrt(pred_edges_x**2 + pred_edges_y**2)
         
-        target_edges_x = F.conv2d(target_gray, self.sobel_x, padding=1)
-        target_edges_y = F.conv2d(target_gray, self.sobel_y, padding=1)
+        target_edges_x = F.conv2d(target_gray, sobel_x, padding=1)
+        target_edges_y = F.conv2d(target_gray, sobel_y, padding=1)
         target_edges = torch.sqrt(target_edges_x**2 + target_edges_y**2)
         
         # Edge loss

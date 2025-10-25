@@ -11,6 +11,7 @@ def update_gdino_params(prompt: str, box_thr: float, text_thr: float, hand_detec
                        ring_pair_edge_filter: bool, pair_min_gap: int, pair_max_gap: int,
                        smooth_close: int, smooth_open: int, convex_hull: bool, force_rectify: str, rectify_padding: int, rectangle_expansion_factor: float,
                        mode: str, min_component_area: int, show_green_frame: bool,
+                       lock_size_enable: bool, lock_size_long: int, lock_size_short: int, lock_size_pad: int,
                        use_gpu: bool):
     """Update GroundingDINO, Background Removal, and White-ring params - COPY FROM SEGMENT_GRADIO.py"""
     try:
@@ -78,6 +79,12 @@ def update_gdino_params(prompt: str, box_thr: float, text_thr: float, hand_detec
         CFG.video_use_gpu = use_gpu
         EDGE.set_gpu_mode(use_gpu)
         
+        # Lock Size Settings
+        CFG.video_lock_enable = lock_size_enable
+        CFG.video_lock_n_warmup = 50  # Default warmup frames
+        CFG.video_lock_trim = 0.03    # Default trim factor
+        CFG.video_lock_pad = max(0, min(50, lock_size_pad))
+        
         # Legacy background removal params (only if white-ring is disabled)
         if not use_white_ring:
             CFG.bg_removal_model = bg_model
@@ -106,6 +113,9 @@ def update_gdino_params(prompt: str, box_thr: float, text_thr: float, hand_detec
             status_msg += f"   Display: {mode}\n"
             status_msg += f"   Min Component: {min_component_area}\n"
             status_msg += f"   Green Frame: {show_green_frame}\n"
+            status_msg += f"   Lock Size: {'ON' if lock_size_enable else 'OFF'}"
+            if lock_size_enable:
+                status_msg += f" (Long: {lock_size_long}px, Short: {lock_size_short}px, Pad: {lock_size_pad}px)"
             status_msg += f"\n🎨 Legacy BG Removal: DISABLED (DexiNed active)"
         else:
             status_msg += f"\n🎨 Legacy BG Removal: {bg_model}\n"

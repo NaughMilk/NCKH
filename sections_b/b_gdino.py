@@ -191,7 +191,7 @@ class GDINO:
         if text_thr is None:
             text_thr = CFG.current_text_thr
         
-        # Resize image (train-like settings for better stability)
+        # Resize image (train-like settings for better stability) - LIKE NCC_PIPELINE_NEW.py
         scale = self.short_side / float(min(h, w))
         if max(h, w) * scale > self.max_size:
             scale = self.max_size / float(max(h, w))
@@ -201,9 +201,9 @@ class GDINO:
         rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
         image_tensor = to_tensor_img(rgb)
         
-        # Stage 1: Detect box container
-        _log_info("GDINO Two-Stage", "Stage 1: Detecting box container...")
-        box_caption = "box ."
+        # Stage 1: Detect plastic box container (use exact phrase)
+        _log_info("GDINO Two-Stage", "Stage 1: Detecting plastic box container...")
+        box_caption = "plastic box ."
         
         if CFG.device == "cuda":
             ctx = torch.amp.autocast('cuda')
@@ -219,7 +219,7 @@ class GDINO:
                 text_threshold=text_thr,
             )
         
-        _log_info("GDINO Two-Stage", f"Stage 1 result: {len(boxes_box)} box detections")
+        _log_info("GDINO Two-Stage", f"Stage 1 result: {len(boxes_box)} plastic box detections")
         
         # Stage 2: Detect items from QR (if available)
         boxes_items = torch.empty((0, 4))
@@ -228,15 +228,17 @@ class GDINO:
         
         if qr_items and len(qr_items) > 0:
             _log_info("GDINO Two-Stage", f"Stage 2: Detecting QR items: {qr_items}")
+            # FIXED: Use correct prompt format like NCC_PIPELINE_NEW.py
             items_prompt = " . ".join(qr_items) + " ."
             
             with ctx:
+                # FIXED: Use lower thresholds for Stage 2 (fruit detection)
                 boxes_items, logits_items, phrases_items = self._predict(
                     model=self.model,
                     image=image_tensor,
                     caption=items_prompt,
-                    box_threshold=box_thr,
-                    text_threshold=text_thr,
+                    box_threshold=box_thr * 0.8,  # Lower box threshold for fruits
+                    text_threshold=text_thr * 0.8,  # Lower text threshold for fruits
                 )
             
             _log_info("GDINO Two-Stage", f"Stage 2 result: {len(boxes_items)} item detections")

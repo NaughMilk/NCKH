@@ -3,6 +3,8 @@
 import os
 import traceback
 import torch
+import time
+import json
 from typing import Optional
 
 # Import dependencies
@@ -65,17 +67,63 @@ def init_models() -> str:
         _log_success("Init Models", f"YOLO structure: {default_yolo_root}")
         _log_success("Init Models", f"U²-Net structure: {default_u2net_root}")
         
-        # 3. Create initial data.yaml files
+        # 3. Create initial data.yaml files - PROTECTED VERSION
         yolo_yaml_path = os.path.join(default_yolo_root, "data.yaml")
-        yolo_yaml_content = f"""path: {os.path.abspath(default_yolo_root)}
+        
+        # PROTECTION: Check if multi-class YAML already exists
+        should_create_yolo_yaml = True
+        if os.path.exists(yolo_yaml_path):
+            try:
+                with open(yolo_yaml_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if 'nc: 2' in content or 'nc: 3' in content or 'nc: 4' in content:
+                        should_create_yolo_yaml = False
+                        _log_info("Init Models", "Multi-class YOLO YAML already exists, skipping overwrite")
+            except Exception as e:
+                _log_warning("Init Models", f"Could not check existing YOLO YAML: {e}")
+        
+        if should_create_yolo_yaml:
+            yolo_yaml_content = f"""path: {os.path.abspath(default_yolo_root)}
 train: images/train
 val: images/val
 
-nc: 22
-names: {list(range(22))}
+nc: 1
+names: ['plastic box']
 """
-        atomic_write_text(yolo_yaml_path, yolo_yaml_content)
-        _log_success("Init Models", f"Created YOLO data.yaml: {yolo_yaml_path}")
+            atomic_write_text(yolo_yaml_path, yolo_yaml_content)
+            _log_success("Init Models", f"Created initial YOLO data.yaml: {yolo_yaml_path}")
+        else:
+            _log_info("Init Models", f"Using existing YOLO data.yaml: {yolo_yaml_path}")
+        
+        # U²-Net manifest (not YAML) - giống NCC_PIPELINE_NEW.py
+        u2net_manifest_path = os.path.join(default_u2net_root, "manifest.json")
+        
+        # PROTECTION: Check if U²-Net manifest already exists
+        should_create_u2net_manifest = True
+        if os.path.exists(u2net_manifest_path):
+            try:
+                with open(u2net_manifest_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if 'session_id' in content and 'train_images' in content:
+                        should_create_u2net_manifest = False
+                        _log_info("Init Models", "U²-Net manifest already exists, skipping overwrite")
+            except Exception as e:
+                _log_warning("Init Models", f"Could not check existing U²-Net manifest: {e}")
+        
+        if should_create_u2net_manifest:
+            u2net_manifest = {
+                "session_id": default_session,
+                "created_at": time.time(),
+                "train_images": [],
+                "val_images": [],
+                "train_masks": [],
+                "val_masks": []
+            }
+            
+            atomic_write_text(u2net_manifest_path, json.dumps(u2net_manifest, ensure_ascii=False, indent=2))
+            _log_success("Init Models", f"Created U²-Net manifest: {u2net_manifest_path}")
+        else:
+            _log_info("Init Models", f"Using existing U²-Net manifest: {u2net_manifest_path}")
         
         # Initialize DexiNed
         _log_info("Init Models", "Initializing DexiNed...")

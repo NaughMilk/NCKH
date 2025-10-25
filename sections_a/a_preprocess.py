@@ -16,7 +16,7 @@ def preprocess_cpu(bgr):
 
 def preprocess_gpu(bgr, use_gpu=True):
     try:
-        from sections.SECTION_A_CONFIG_UTILS import CUDA_AVAILABLE
+        from sections_a.a_config import CUDA_AVAILABLE
     except Exception:
         CUDA_AVAILABLE = False
     if not use_gpu or not CUDA_AVAILABLE:

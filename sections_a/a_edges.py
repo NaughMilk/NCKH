@@ -6,6 +6,13 @@ import os
 # Import from other sections_a modules
 from .a_preprocess import preprocess_gpu
 
+# Import functions from a_geometry
+from .a_geometry import (
+    keep_paired_edges, ring_mask_from_edges, smooth_mask, fit_rect_core,
+    apply_locked_box, minarearect_on_eroded, largest_contour, robust_box_from_contour,
+    force_square_from_mask, components_inside
+)
+
 # Global CUDA availability check
 try:
     import torch
@@ -151,7 +158,7 @@ def process_camera_frame(frame, backend, canny_lo, canny_hi, dexi_thr,
     # Process using existing pipeline
     try:
         # Import process function from other modules (will be available after all sections are loaded)
-        from sections.SECTION_A_CONFIG_UTILS import process
+        from sections_a.a_edges import process
         processed_frame, _, info = process(frame_rgb, backend, canny_lo, canny_hi, dexi_thr,
                                          dilate_iters, close_kernel, min_area_ratio, rect_score_min,
                                          ar_min, ar_max, erode_inner, smooth_close, smooth_open, use_hull,
@@ -178,99 +185,110 @@ def process(image, backend, canny_lo, canny_hi, dexi_thr,
     # Use EDGE.detect() for advanced edge detection
     edges = EDGE.detect(bgr, backend, canny_lo, canny_hi, dexi_thr)
 
-    # Import other functions from other modules (will be available after all sections are loaded)
-    try:
-        from sections.SECTION_A_CONFIG_UTILS import (
-            keep_paired_edges, ring_mask_from_edges, smooth_mask, fit_rect_core,
-            apply_locked_box, minarearect_on_eroded, largest_contour, robust_box_from_contour,
-            force_square_from_mask, components_inside
-        )
-        
-        # Apply pair-edge filter
-        if use_pair_filter:
+    # Apply pair-edge filter
+    if use_pair_filter:
+        try:
+            from .a_geometry import keep_paired_edges
             edges = keep_paired_edges(edges, pair_min_gap, pair_max_gap)
+        except Exception as e:
+            pass
 
+    # Import ring_mask_from_edges directly to avoid circular import issues
+    try:
+        from .a_geometry import ring_mask_from_edges
         mask, best = ring_mask_from_edges(edges, dilate_iters, close_kernel, 8,  # ban_border_px
-                                          min_area_ratio, rect_score_min, ar_min, ar_max)
-        if erode_inner>0:
-            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(int(erode_inner*2+1), int(erode_inner*2+1)))
-            mask = cv2.erode(mask, k)
+                                         min_area_ratio, rect_score_min, ar_min, ar_max)
+    except Exception as e:
+        # Fallback: create empty mask
+        mask = np.zeros_like(edges, dtype=np.uint8)
+        best = None
+    if erode_inner>0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(int(erode_inner*2+1), int(erode_inner*2+1)))
+        mask = cv2.erode(mask, k)
 
+    try:
+        from .a_geometry import smooth_mask
         mask = smooth_mask(mask, close=smooth_close, open_=smooth_open, use_hull=use_hull)
+    except Exception as e:
+        pass
 
-        # Use fit_rect_core to get detection parameters
+    # Use fit_rect_core to get detection parameters
+    try:
+        from .a_geometry import fit_rect_core
+        import numpy as np
         cx, cy, w, h, ang, mask_final, poly_core = fit_rect_core(
             image, backend, canny_lo, canny_hi, dexi_thr,
             dilate_iters, close_kernel, min_area_ratio, rect_score_min,
             ar_min, ar_max, erode_inner, smooth_close, smooth_open,
             use_hull, use_pair_filter, pair_min_gap, pair_max_gap
         )
-        
-        # Use the processed mask from fit_rect_core
-        mask = mask_final
+    except Exception as e:
+        # Fallback values
+        import numpy as np
+        cx, cy, w, h, ang, mask_final, poly_core = None, None, 0, 0, 0, np.zeros_like(edges, dtype=np.uint8), None
+    
+    # Use the processed mask from fit_rect_core
+    mask = mask_final
 
-        # Determine final polygon
-        poly = None
-        if size_lock and isinstance(size_lock, dict) and size_lock.get("enabled", False) and cx is not None:
-            # Use size-locked box
-            long_locked = size_lock.get("long", 0)
-            short_locked = size_lock.get("short", 0)
-            lock_pad = size_lock.get("pad", 0)
-            
-            if long_locked > 0 and short_locked > 0:
-                poly = apply_locked_box(cx, cy, w, h, ang, long_locked, short_locked, lock_pad)
-                # Create locked mask
-                mask_locked = np.zeros_like(mask)
-                cv2.fillPoly(mask_locked, [poly], 255)
-                mask = mask_locked
-        else:
-            # Use original rectification logic
-            if rectify_mode == "Robust (erode-fit-pad)":
-                poly, mask = minarearect_on_eroded(mask, erode_px=erode_inner or 3, pad=rect_pad, trim=0.03)
-            elif rectify_mode == "Rectangle":
-                # Giữ chế độ cũ, nhưng thay box bằng robust_box để bớt phình
-                c = largest_contour(mask)
-                if c is not None:
-                    rb = robust_box_from_contour(c, trim=0.03)
-                    outm = np.zeros_like(mask); cv2.fillPoly(outm,[rb],255)
-                    poly, mask = cv2.boxPoints(cv2.minAreaRect(rb.astype(np.float32))), outm
-                    poly = poly.astype(np.int32)
-                else:
-                    poly = best
-            elif rectify_mode == "Square":
-                # Legacy square mode
-                poly, mask = force_square_from_mask(mask, pad_px=rect_pad, mode="square")
+    # Determine final polygon
+    poly = None
+    if size_lock and isinstance(size_lock, dict) and size_lock.get("enabled", False) and cx is not None:
+        # Use size-locked box
+        long_locked = size_lock.get("long", 0)
+        short_locked = size_lock.get("short", 0)
+        lock_pad = size_lock.get("pad", 0)
+        
+        if long_locked > 0 and short_locked > 0:
+            poly = apply_locked_box(cx, cy, w, h, ang, long_locked, short_locked, lock_pad)
+            # Create locked mask
+            mask_locked = np.zeros_like(mask)
+            cv2.fillPoly(mask_locked, [poly], 255)
+            mask = mask_locked
+    else:
+        # Use original rectification logic
+        if rectify_mode == "Robust (erode-fit-pad)":
+            poly, mask = minarearect_on_eroded(mask, erode_px=erode_inner or 3, pad=rect_pad, trim=0.03)
+        elif rectify_mode == "Rectangle":
+            # Giữ chế độ cũ, nhưng thay box bằng robust_box để bớt phình
+            c = largest_contour(mask)
+            if c is not None:
+                rb = robust_box_from_contour(c, trim=0.03)
+                outm = np.zeros_like(mask); cv2.fillPoly(outm,[rb],255)
+                poly, mask = cv2.boxPoints(cv2.minAreaRect(rb.astype(np.float32))), outm
+                poly = poly.astype(np.int32)
             else:
                 poly = best
-
-        overlay = bgr.copy()
-        if poly is not None:
-            cv2.polylines(overlay,[poly],True,(255,255,255),6,cv2.LINE_AA)
-            if show_green_frame:
-                cv2.polylines(overlay,[poly],True,(0,255,0),3,cv2.LINE_AA)
-        elif best is not None:
-            cv2.polylines(overlay,[best],True,(255,255,255),6,cv2.LINE_AA)
-
-        tint = np.full_like(overlay, 255)
-        overlay = np.where(mask[...,None]>0, (0.25*tint + 0.75*overlay).astype(np.uint8), overlay)
-        overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
-
-        if mode=="Components Inside":
-            vis, n = components_inside(mask, overlay_rgb, min_area=min_comp_area)
-            out = vis
+        elif rectify_mode == "Square":
+            # Legacy square mode
+            poly, mask = force_square_from_mask(mask, pad_px=rect_pad, mode="square")
         else:
-            out = overlay_rgb
-            n = 0
+            poly = best
 
-        gpu_info = "[GPU]" if EDGE.use_gpu else "[CPU]"
-        info = (f"Edge: {backend} | DexiNed thr={dexi_thr:.2f} | "
-                f"Canny {canny_lo}-{canny_hi} | close={close_kernel} dilate={dilate_iters} | "
-                f"min_area={min_area_ratio}% rect_score≥{rect_score_min} AR[{ar_min},{ar_max}] | "
-                f"smooth close={smooth_close} open={smooth_open} hull={use_hull} | "
-                f"rectify={rectify_mode}+{rect_pad}px | comps={n} | "
-                f"time={1000*(time.time()-t0):.1f}ms | {gpu_info}")
-        return out, (edges if edges.ndim==2 else edges[...,0]), info
-        
-    except ImportError:
-        # Fallback if other functions not available yet
-        return image, edges, "Processing pipeline not fully loaded"
+    overlay = bgr.copy()
+    if poly is not None:
+        cv2.polylines(overlay,[poly],True,(255,255,255),6,cv2.LINE_AA)
+        if show_green_frame:
+            cv2.polylines(overlay,[poly],True,(0,255,0),3,cv2.LINE_AA)
+    elif best is not None:
+        cv2.polylines(overlay,[best],True,(255,255,255),6,cv2.LINE_AA)
+
+    tint = np.full_like(overlay, 255)
+    overlay = np.where(mask[...,None]>0, (0.25*tint + 0.75*overlay).astype(np.uint8), overlay)
+    overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+
+    if mode=="Components Inside":
+        from .a_geometry import components_inside
+        vis, n = components_inside(mask, overlay_rgb, min_comp_area)
+        out = vis
+    else:
+        out = overlay_rgb
+        n = 0
+
+    gpu_info = "[GPU]" if EDGE.use_gpu else "[CPU]"
+    info = (f"Edge: {backend} | DexiNed thr={dexi_thr:.2f} | "
+            f"Canny {canny_lo}-{canny_hi} | close={close_kernel} dilate={dilate_iters} | "
+            f"min_area={min_area_ratio}% rect_score≥{rect_score_min} AR[{ar_min},{ar_max}] | "
+            f"smooth close={smooth_close} open={smooth_open} hull={use_hull} | "
+            f"rectify={rectify_mode}+{rect_pad}px | comps={n} | "
+            f"time={1000*(time.time()-t0):.1f}ms | {gpu_info}")
+    return out, n

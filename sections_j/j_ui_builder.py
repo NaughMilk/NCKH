@@ -1,12 +1,13 @@
 # ========================= SECTION J: UI BUILDER ========================= #
 
 import gradio as gr
+import os
 
 # Import dependencies
 from sections_a.a_config import CFG
 from sections_i.i_config_updates import update_gdino_params
 from sections_i.i_dexined import auto_init_dexined, init_dexined_backend, get_system_status
-from sections_i.i_handlers import handle_capture, handle_multiple_uploads, handle_qr_generation, handle_warehouse_upload
+from sections_i.i_handlers import handle_capture, handle_multiple_uploads, handle_qr_generation, handle_warehouse_upload, handle_warehouse_model_upload
 from sections_i.i_utils import decode_qr_info
 from sections_j.j_ui_components import (
     create_settings_components,
@@ -42,6 +43,7 @@ def build_ui():
          ring_pair_edge_filter, pair_min_gap, pair_max_gap,
          smooth_close, smooth_open, convex_hull, force_rectify, rectify_padding, rectangle_expansion_factor,
          mode, min_component_area, show_green_frame,
+         lock_size_enable, lock_size_long, lock_size_short, lock_size_pad,
          use_gpu, bg_model, feather, update_btn, config_status) = settings_components
         
         # Settings toggle handler
@@ -91,6 +93,7 @@ def build_ui():
                    ring_pair_edge_filter, pair_min_gap, pair_max_gap,
                    smooth_close, smooth_open, convex_hull, force_rectify, rectify_padding, rectangle_expansion_factor,
                    mode, min_component_area, show_green_frame,
+                   lock_size_enable, lock_size_long, lock_size_short, lock_size_pad,
                    use_gpu],
             outputs=[config_status]
         )
@@ -164,26 +167,43 @@ def build_ui():
             with gr.Tab("Training"):
                 training_components = create_training_components()
                 (yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
-                 yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_train_btn, sdy_status, sdy_weights,
+                 yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_update_config_btn, yolo_train_btn, sdy_status, sdy_weights, sdy_folder,
                  u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
                  u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight,
-                 u2_train_btn, u2_status, u2_weights, u2_onnx) = training_components
+                 u2_update_config_btn, u2_train_btn, u2_status, u2_weights, u2_folder, u2_onnx) = training_components
                 
                 # Training Event Handlers
                 from sections_i.i_training import train_sdy_btn as train_yolo_fn, train_u2net_btn as train_u2_fn
+                from sections_i.i_training import update_yolo_config_only, update_u2net_config_only
+                
+                # YOLO Update Config Button
+                yolo_update_config_btn.click(
+                    fn=update_yolo_config_only,
+                    inputs=[yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
+                           yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers],
+                    outputs=[sdy_status]
+                )
+                
+                # U²-Net Update Config Button
+                u2_update_config_btn.click(
+                    fn=update_u2net_config_only,
+                    inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
+                           u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight],
+                    outputs=[u2_status]
+                )
                 
                 yolo_train_btn.click(
                     fn=train_yolo_fn,
                     inputs=[yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
                            yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers],
-                    outputs=[sdy_status, sdy_weights]
+                    outputs=[sdy_status, sdy_weights, sdy_folder]
                 )
                 
                 u2_train_btn.click(
                     fn=train_u2_fn,
                     inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
                            u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight],
-                    outputs=[u2_status, u2_weights, u2_onnx]
+                    outputs=[u2_status, u2_weights, u2_folder, u2_onnx]
                 )
             
             # Tab 3: QR Generator
@@ -203,23 +223,49 @@ def build_ui():
             # Tab 4: Warehouse Check
             with gr.Tab("Warehouse Check"):
                 warehouse_components = create_warehouse_components()
-                (warehouse_cam, warehouse_upload, enable_deskew, deskew_method,
+                (yolo_model_file, u2net_model_file, upload_models_btn, model_upload_status,
+                 warehouse_cam, warehouse_upload, enable_deskew, deskew_method, enable_force_rectangle,
                  check_btn, warehouse_gallery, warehouse_log) = warehouse_components
                 
+                # Model Upload Event Handler
+                def handle_model_upload(yolo_file, u2net_file):
+                    """Handle model file uploads"""
+                    from sections_i.i_handlers import handle_warehouse_model_upload
+                    success, message = handle_warehouse_model_upload(yolo_file, u2net_file)
+                    return message
+                
+                upload_models_btn.click(
+                    fn=handle_model_upload,
+                    inputs=[yolo_model_file, u2net_model_file],
+                    outputs=[model_upload_status]
+                )
+                
                 # Warehouse Check Event Handlers
-                def handle_warehouse_check(cam_img, upload_img, deskew_enabled, deskew_method):
+                def handle_warehouse_check(cam_img, upload_img, deskew_enabled, deskew_method, force_rectangle):
                     """Handle warehouse check with either camera or upload"""
                     input_img = cam_img if cam_img is not None else upload_img
                     if input_img is None:
                         return None, "[ERROR] No image provided"
                     
-                    # FIXED: Only return first 2 values, ignore results
-                    vis_images, log_msg, _ = handle_warehouse_upload(input_img, deskew_enabled)
+                    # Use uploaded models if available
+                    yolo_path = None
+                    u2net_path = None
+                    
+                    # Try to find uploaded models
+                    models_dir = os.path.join(CFG.project_dir, "warehouse_models")
+                    yolo_path = os.path.join(models_dir, "yolo_model.pt")
+                    u2net_path = os.path.join(models_dir, "u2net_model.pth")
+                    
+                    if not os.path.exists(yolo_path) or not os.path.exists(u2net_path):
+                        return None, "[ERROR] Please upload both YOLO and U²-Net models first"
+                    
+                    # FIXED: Pass model paths to handler
+                    vis_images, log_msg, _ = handle_warehouse_upload(input_img, yolo_path, u2net_path, deskew_enabled, deskew_method, force_rectangle)
                     return vis_images, log_msg
                 
                 check_btn.click(
                     fn=handle_warehouse_check,
-                    inputs=[warehouse_cam, warehouse_upload, enable_deskew, deskew_method],
+                    inputs=[warehouse_cam, warehouse_upload, enable_deskew, deskew_method, enable_force_rectangle],
                     outputs=[warehouse_gallery, warehouse_log]
                 )
             

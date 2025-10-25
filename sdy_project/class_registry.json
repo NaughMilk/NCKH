@@ -1,0 +1,10 @@
+{
+  "class_names": [
+    "plastic box",
+    "tangerine",
+    "crisp persimmon"
+  ],
+  "class_id_counter": 3,
+  "last_updated": 1761354268.3137481,
+  "session_id": "current_dataset"
+}

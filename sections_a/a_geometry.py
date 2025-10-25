@@ -58,7 +58,7 @@ def minarearect_on_eroded(mask, erode_px=3, pad=12, trim=0.03):
     """Erode để cắt bóng, fit hộp chắc, rồi nới ra pad"""
     # Import largest_contour from other modules (will be available after all sections are loaded)
     try:
-        from sections.SECTION_A_CONFIG_UTILS import largest_contour
+        from sections_a.a_geometry import largest_contour
     except ImportError:
         # Fallback implementation
         def largest_contour(mask):
@@ -90,7 +90,6 @@ def keep_paired_edges(edge, min_gap=4, max_gap=18):
     # Nếu quá ít edges được giữ lại, fallback về edges gốc
     result = cv2.bitwise_and(e, paired)
     if np.count_nonzero(result) < np.count_nonzero(e) * 0.1:  # Nếu mất >90% edges
-        print(f"[WARNING] Pair-edge filter quá strict, fallback về edges gốc")
         return e
     
     return result
@@ -190,28 +189,12 @@ def ring_mask_from_edges(edges, dil_iters, close_k, ban_border_px,
         if score > rect_score_min and score > best_score:
             best_score = score; best = c
     
-    if best is None: 
-        return np.zeros((h,w), dtype=np.uint8), None
-    
-    mask = np.zeros((h,w), dtype=np.uint8)
-    cv2.fillPoly(mask, [best], 255)
-    return mask, best
+    if best is None:
+        return np.zeros_like(edges, np.uint8), None
 
-def keep_paired_edges(edge, min_gap=4, max_gap=18):
-    """Giữ những biên có đối biên cách trong [min_gap, max_gap]"""
-    e = (edge>0).astype(np.uint8)*255
-    inv = 255 - e
-    dist = cv2.distanceTransform(inv, cv2.DIST_L2, 3)
-    paired = ((dist>=min_gap) & (dist<=max_gap)).astype(np.uint8)*255
-    paired = cv2.dilate(paired, None, iterations=1)  # khôi phục nét
-    
-    # Nếu quá ít edges được giữ lại, fallback về edges gốc
-    result = cv2.bitwise_and(e, paired)
-    if np.count_nonzero(result) < np.count_nonzero(e) * 0.1:  # Nếu mất >90% edges
-        print(f"[WARNING] Pair-edge filter quá strict, fallback về edges gốc")
-        return e
-    
-    return result
+    mask = np.zeros_like(edges, np.uint8)
+    cv2.drawContours(mask, [best], -1, 255, thickness=-1)
+    return mask, best
 
 def fit_rect_core(rgb, backend, canny_lo, canny_hi, dexi_thr,
                   dilate_iters, close_kernel, min_area_ratio, rect_score_min,
@@ -223,24 +206,28 @@ def fit_rect_core(rgb, backend, canny_lo, canny_hi, dexi_thr,
     - w,h là kích thước của minAreaRect trên mask đã erode-fit (không pad).
     - angle theo chuẩn OpenCV minAreaRect.
     """
+    import numpy as np
+    import cv2
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     
     # Import EDGE from a_edges
     try:
         from sections_a.a_edges import EDGE
+        edges = EDGE.detect(bgr, backend, canny_lo, canny_hi, dexi_thr)
+        if edges is None:
+            edges = cv2.Canny(bgr, canny_lo, canny_hi)
     except ImportError:
-        # Fallback
-        class EDGE:
-            def detect(self, bgr, backend, canny_lo, canny_hi, dexi_thr): return None
-    
-    edges = EDGE.detect(bgr, backend, canny_lo, canny_hi, dexi_thr)
+        # Fallback: use Canny
+        edges = cv2.Canny(bgr, canny_lo, canny_hi)
     
     # Apply pair-edge filter if enabled
     if use_pair_filter:
+        from .a_geometry import keep_paired_edges
         edges = keep_paired_edges(edges, pair_min_gap, pair_max_gap)
     
     # Get mask from edges
-    mask, best = ring_mask_from_edges(edges, dilate_iters, close_kernel,
+    from .a_geometry import ring_mask_from_edges
+    mask, best = ring_mask_from_edges(edges, dilate_iters, close_kernel, 8,  # ban_border_px
                                       min_area_ratio, rect_score_min, ar_min, ar_max)
     
     # Erode if needed
@@ -249,14 +236,17 @@ def fit_rect_core(rgb, backend, canny_lo, canny_hi, dexi_thr,
         mask = cv2.erode(mask, k)
     
     # Smooth mask
-    mask = smooth_mask(mask, close=smooth_close, open_=smooth_open, hull=use_hull)
+    from .a_geometry import smooth_mask
+    mask = smooth_mask(mask, close=smooth_close, open_=smooth_open, use_hull=use_hull)
     
     # Get largest contour
+    from .a_geometry import largest_contour
     c = largest_contour(mask)
     if c is None:
         return None, None, None, None, None, mask, None
     
     # Apply robust box fitting (erode-fit without pad)
+    from .a_geometry import robust_box_from_contour
     poly_core = robust_box_from_contour(c, trim=0.03)
     rect = cv2.minAreaRect(poly_core.reshape(-1,1,2).astype(np.float32))
     (cx, cy), (w, h), ang = rect
@@ -273,9 +263,8 @@ def fit_rect_core(rgb, backend, canny_lo, canny_hi, dexi_thr,
     # Import functions from other modules (will be available after all sections are loaded)
     try:
         from sections_a.a_edges import EDGE
-        from sections.SECTION_A_CONFIG_UTILS import (
-            ring_mask_from_edges, smooth_mask, largest_contour
-        )
+        # Functions are already imported individually above
+        import numpy as np
         
         # Use EDGE.detect() for advanced edge detection (DexiNed or Canny)
         edges = EDGE.detect(bgr, backend, canny_lo, canny_hi, dexi_thr)
@@ -310,4 +299,61 @@ def fit_rect_core(rgb, backend, canny_lo, canny_hi, dexi_thr,
         
     except ImportError:
         # Fallback if other functions not available yet
+        import numpy as np
         return None, None, None, None, None, None, None
+
+def force_square_from_mask(mask, pad_px=6, mode='square'):
+    """Ép mask thành hình vuông hoặc chữ nhật quay - sử dụng cv2.boxPoints"""
+    cnt = largest_contour(mask)
+    if cnt is None: 
+        return None, {"applied": False}
+    
+    (cx, cy), (w, h), angle = cv2.minAreaRect(cnt)
+    original_size = (int(w), int(h))
+    
+    if mode == 'square':
+        s = max(w, h) + 2*pad_px
+        size = (s, s)
+        square_size = (int(s), int(s))
+    else:
+        size = (w + 2*pad_px, h + 2*pad_px)
+        square_size = (int(w + 2*pad_px), int(h + 2*pad_px))
+    
+    # Sử dụng cv2.boxPoints thay vì tự xoay ma trận
+    box = cv2.boxPoints(((cx, cy), size, angle))
+    
+    # Tạo square info
+    square_info = {
+        "applied": True,
+        "original_size": original_size,
+        "square_size": square_size,
+        "center": (int(cx), int(cy)),
+        "angle": angle,
+        "mode": mode
+    }
+    
+    # Không clamp points - để cv2.polylines/fillPoly tự clip
+    return box.astype(np.float32), square_info
+
+def components_inside(mask, bgr, min_comp_area):
+    """Find components inside the container mask"""
+    # chỉ lấy phần bên trong
+    inner = cv2.bitwise_and(mask, mask, mask=mask)
+    # connected components trên vùng trong — dùng mask như ảnh nhị phân
+    # để tách thành phần, cần làm "đặc" 1 chút
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(3,3))
+    inner = cv2.morphologyEx(inner, cv2.MORPH_OPEN, k, iterations=1)
+    num, lab = cv2.connectedComponents(inner)
+    vis = bgr.copy()
+    boxes = 0
+    for i in range(1, num):
+        comp = (lab==i).astype(np.uint8)*255
+        if cv2.countNonZero(comp) < min_comp_area: 
+            continue
+        cnts,_ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts: continue
+        c = max(cnts, key=cv2.contourArea)
+        x,y,w,h = cv2.boundingRect(c)
+        cv2.rectangle(vis, (x,y), (x+w,y+h), (0,255,0), 2)
+        boxes += 1
+    return vis, boxes

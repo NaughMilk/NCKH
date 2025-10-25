@@ -69,6 +69,13 @@ def create_settings_components():
         min_component_area = gr.Slider(0, 10000, 0, step=500, label="Min component area")
         show_green_frame = gr.Checkbox(True, label="Show green frame")
         
+        # Lock Size Settings
+        gr.Markdown("### Lock Size Settings")
+        lock_size_enable = gr.Checkbox(False, label="Enable Lock Size")
+        lock_size_long = gr.Slider(100, 2000, 800, step=10, label="Lock Long Side (px)")
+        lock_size_short = gr.Slider(100, 2000, 600, step=10, label="Lock Short Side (px)")
+        lock_size_pad = gr.Slider(0, 50, 10, step=1, label="Lock Padding (px)")
+        
         # GPU Settings
         gr.Markdown("#### GPU Settings")
         use_gpu = gr.Checkbox(CFG.video_use_gpu, label="GPU Acceleration")
@@ -95,6 +102,7 @@ def create_settings_components():
             ring_pair_edge_filter, pair_min_gap, pair_max_gap,
             smooth_close, smooth_open, convex_hull, force_rectify, rectify_padding, rectangle_expansion_factor,
             mode, min_component_area, show_green_frame,
+            lock_size_enable, lock_size_long, lock_size_short, lock_size_pad,
             use_gpu, bg_model, feather, update_btn, config_status)
 
 def create_dataset_components():
@@ -173,9 +181,12 @@ def create_training_components():
             yolo_hsv = gr.Checkbox(True, label="HSV Aug")
             yolo_workers = gr.Number(8, label="Workers")
         
-        yolo_train_btn = gr.Button("Train YOLOv8", variant="primary")
+        with gr.Row():
+            yolo_update_config_btn = gr.Button("Update YOLO Config", variant="secondary")
+            yolo_train_btn = gr.Button("Train YOLOv8", variant="primary")
         sdy_status = gr.Textbox(label="YOLO Training Status", lines=5, interactive=False)
         sdy_weights = gr.File(label="Download YOLO Weights")
+        sdy_folder = gr.Textbox(label="YOLO Models Folder", interactive=False, visible=False)
         
         gr.Markdown("### U2-Net Training")
         with gr.Row():
@@ -193,16 +204,19 @@ def create_training_components():
             u2_use_edge_loss = gr.Checkbox(True, label="Edge Loss")
             u2_edge_loss_weight = gr.Number(0.5, label="Edge Loss Weight")
         
-        u2_train_btn = gr.Button("Train U2-Net", variant="primary")
+        with gr.Row():
+            u2_update_config_btn = gr.Button("Update U2-Net Config", variant="secondary")
+            u2_train_btn = gr.Button("Train U2-Net", variant="primary")
         u2_status = gr.Textbox(label="U2-Net Training Status", lines=5, interactive=False)
         u2_weights = gr.File(label="Download U2-Net Weights")
+        u2_folder = gr.Textbox(label="U2-Net Models Folder", interactive=False, visible=False)
         u2_onnx = gr.File(label="Download U2-Net ONNX")
     
     return (yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
-            yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_train_btn, sdy_status, sdy_weights,
+            yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_update_config_btn, yolo_train_btn, sdy_status, sdy_weights, sdy_folder,
             u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
             u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight,
-            u2_train_btn, u2_status, u2_weights, u2_onnx)
+            u2_update_config_btn, u2_train_btn, u2_status, u2_weights, u2_folder, u2_onnx)
 
 def create_qr_components():
     """Create QR generation components"""
@@ -240,19 +254,35 @@ def create_warehouse_components():
     """Create warehouse checking components"""
     with gr.Group():
         gr.Markdown("### Warehouse Checker")
+        
+        # Model Upload Section
+        gr.Markdown("#### 1. Upload Trained Models")
+        with gr.Row():
+            yolo_model_file = gr.File(label="YOLO Model (.pt)", file_types=[".pt"])
+            u2net_model_file = gr.File(label="U²-Net Model (.pth)", file_types=[".pth"])
+        
+        upload_models_btn = gr.Button("Upload Models", variant="secondary")
+        model_upload_status = gr.Textbox(label="Model Upload Status", lines=2, interactive=False)
+        
+        # Image Input Section
+        gr.Markdown("#### 2. Input Image")
         warehouse_cam = gr.Image(label="Webcam", sources=["webcam"], type="numpy")
         warehouse_upload = gr.Image(label="Upload Image", sources=["upload"], type="numpy")
         
-        gr.Markdown("#### Deskew Settings")
+        # Processing Settings
+        gr.Markdown("#### 3. Processing Settings")
         enable_deskew = gr.Checkbox(label="Enable Deskew", value=False)
         deskew_method = gr.Radio(["minAreaRect", "PCA", "heuristic"], value="minAreaRect", label="Deskew Method")
+        enable_force_rectangle = gr.Checkbox(label="Force Rectangular Mask", value=True)
         
-        check_btn = gr.Button("Run Check", variant="primary")
+        check_btn = gr.Button("Run Warehouse Check", variant="primary")
         
+        # Results
         warehouse_gallery = gr.Gallery(label="Results", columns=2, height=400)
         warehouse_log = gr.Textbox(label="Check Log", lines=10, interactive=False)
     
-    return (warehouse_cam, warehouse_upload, enable_deskew, deskew_method,
+    return (yolo_model_file, u2net_model_file, upload_models_btn, model_upload_status,
+            warehouse_cam, warehouse_upload, enable_deskew, deskew_method, enable_force_rectangle,
             check_btn, warehouse_gallery, warehouse_log)
 
 def create_image_aligner_components():

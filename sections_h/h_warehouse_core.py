@@ -1,24 +1,41 @@
-# ========================= SECTION H: WAREHOUSE CORE ========================= #
-
 import os
-import cv2
-import numpy as np
+import json
+import time
 import torch
 import torch.nn.functional as F
-import time
-import traceback
-import json
-from typing import Dict, Any, List, Tuple, Optional
+import cv2
+import numpy as np
+from typing import Optional, Dict, Any, Tuple, List
+from ultralytics import YOLO
+from PIL import Image
 
-# Import dependencies
-from sections_a.a_config import Config, CFG, _log_info, _log_success, _log_warning, _log_error
-from sections_e.e_qr_detection import QR
+# Import from other sections
+from sections_a.a_config import CFG, _log_info, _log_success, _log_warning, _log_error
 from sections_e.e_qr_utils import parse_qr_payload, validate_qr_yolo_match
-from sections_h.h_model_loading import warehouse_yolo_model, warehouse_u2net_model
 from sections_h.h_deskew import deskew_box_roi
 from sections_h.h_mask_processing import _process_enhanced_mask, _process_enhanced_mask_v2, _force_rectangle_mask
+from sections_h.h_model_loading import load_warehouse_yolo, load_warehouse_u2net
 
-def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
+# Import global model variables
+import sections_h.h_model_loading as model_loading
+
+class QR:
+    """QR Code decoder"""
+    def __init__(self):
+        self.dec = cv2.QRCodeDetector()
+
+    def decode(self, frame_bgr: np.ndarray) -> Tuple[Optional[str], Optional[np.ndarray]]:
+        """Decode QR code from frame"""
+        try:
+            data, points, _ = self.dec.detectAndDecode(frame_bgr)
+            if data:
+                return data, points
+        except Exception as e:
+            _log_warning("QR Decode", f"QR decode failed: {e}")
+        return None, None
+
+
+def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2net_model_path: str = None, enable_deskew: bool = False, enable_force_rectangle: bool = True) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
     """
     Pipeline kiểm tra kho - CHỈ DÙNG YOLO MODEL ĐÃ TRAIN:
     1. Đọc QR
@@ -27,7 +44,25 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
     4. (Optional) Deskew box ROI
     5. Hiển thị kết quả + export
     """
-    global warehouse_yolo_model, warehouse_u2net_model
+    # Access global models from model_loading module
+    warehouse_yolo_model = model_loading.warehouse_yolo_model
+    warehouse_u2net_model = model_loading.warehouse_u2net_model
+    
+    # Load models if paths provided
+    if yolo_model_path and u2net_model_path:
+        _log_info("Warehouse Check", f"Loading models: YOLO={yolo_model_path}, U²-Net={u2net_model_path}")
+        if not load_warehouse_yolo(yolo_model_path):
+            return None, "[ERROR] Failed to load YOLO model", None
+        if not load_warehouse_u2net(u2net_model_path):
+            return None, "[ERROR] Failed to load U²-Net model", None
+        _log_success("Warehouse Check", "Both models loaded successfully")
+    
+    # Update model references after loading
+    warehouse_yolo_model = model_loading.warehouse_yolo_model
+    warehouse_u2net_model = model_loading.warehouse_u2net_model
+    
+    # Debug: Check model status
+    _log_info("Warehouse Check", f"Model status: YOLO={warehouse_yolo_model is not None}, U²-Net={warehouse_u2net_model is not None}")
     
     if warehouse_yolo_model is None or warehouse_u2net_model is None:
         return None, "[ERROR] Models not loaded. Please load both YOLO and U²-Net models first.", None
@@ -43,6 +78,22 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
             "visualizations": []
         }
         
+        # Add original image to visualizations for color comparison - FIXED: Use PIL Image for proper color handling with detailed logging
+        _log_info("Color Debug", f"Input frame_bgr - shape: {frame_bgr.shape}, dtype: {frame_bgr.dtype}")
+        _log_info("Color Debug", f"Sample pixel values (first 3x3): {frame_bgr[:3,:3]}")
+        
+        original_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        _log_info("Color Debug", f"BGR to RGB conversion - shape: {original_rgb.shape}, dtype: {original_rgb.dtype}")
+        _log_info("Color Debug", f"Sample pixel values after BGR->RGB (first 3x3): {original_rgb[:3,:3]}")
+        
+        # Convert to PIL Image to ensure proper color handling in Gradio
+        original_pil = Image.fromarray(original_rgb.astype(np.uint8))
+        _log_info("Color Debug", f"PIL Image created - mode: {original_pil.mode}, size: {original_pil.size}")
+        
+        # Use PIL Image for proper color handling in Gradio
+        _log_info("Color Debug", f"Adding PIL Image for display")
+        results["visualizations"].append((original_pil, "Original Image"))
+        
         # Step 1: QR decode
         qr_start = time.time()
         qr = QR()
@@ -53,99 +104,86 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
         if qr_text:
             results["qr_info"] = parse_qr_payload(qr_text)
             _log_success("Warehouse Check", f"QR decoded: {qr_text[:50]}")
+            _log_info("QR Debug", f"QR text type: {type(qr_text)}, value: {repr(qr_text)}")
+            _log_info("QR Debug", f"Parsed QR info type: {type(results['qr_info'])}, value: {results['qr_info']}")
             # Load per-id metadata JSON
-            def _load_qr_meta_by_id(cfg: Config, qr_id: str) -> Optional[dict]:
+            def _load_qr_meta_by_id(cfg, qr_id: str) -> Optional[dict]:
                 if not qr_id:
                     return None
                 try:
                     meta_path = os.path.join(cfg.project_dir, cfg.qr_meta_dir, f"{qr_id}.json")
                     if os.path.exists(meta_path):
                         with open(meta_path, 'r', encoding='utf-8') as f:
-                            return json.load(f)
+                            data = json.load(f)
+                            # Ensure we return a dict, not int or other types
+                            if isinstance(data, dict):
+                                return data
+                            else:
+                                _log_warning("QR Meta Load", f"Expected dict but got {type(data)} for id {qr_id}")
+                                return None
                 except Exception as e:
                     _log_warning("QR Meta Load", f"Failed to load meta for id {qr_id}: {e}")
                 return None
 
-            qr_id = results["qr_info"].get("_qr") if results["qr_info"] else None
-            qr_meta = _load_qr_meta_by_id(CFG, qr_id)
-            results["qr_meta"] = qr_meta
-            # Prepare qr_items for validation/detection from JSON
-            qr_items = {}
-            if qr_meta and isinstance(qr_meta.get("fruits"), dict):
-                qr_items = qr_meta["fruits"]
-            results["qr_items"] = qr_items
-        else:
-            _log_warning("Warehouse Check", "QR decode failed - no text detected")
+            # FIXED: Safe access to qr_info
+            qr_info = results.get("qr_info", {})
+            if isinstance(qr_info, dict):
+                qr_id = qr_info.get("_qr")
+            else:
+                _log_warning("QR Info", f"Expected dict but got {type(qr_info)}: {qr_info}")
+                qr_id = None
+            if qr_id:
+                qr_meta = _load_qr_meta_by_id(CFG, qr_id)
+                if qr_meta:
+                    results["qr_items"] = qr_meta.get("fruits", {})
+                    _log_info("QR Meta", f"Loaded QR metadata: {results['qr_items']}")
         
-        # Step 2: YOLO detection - CHỈ DÙNG MODEL ĐÃ TRAIN
+        # Step 2: YOLO Detection
         yolo_start = time.time()
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        # Sử dụng model đã train với confidence threshold thấp hơn để detect được nhiều object hơn
-        yolo_results = warehouse_yolo_model(frame_rgb, conf=0.25, verbose=False)
+        yolo_results = warehouse_yolo_model(frame_bgr, verbose=False)
         yolo_time = time.time() - yolo_start
         _log_info("Warehouse Timing", f"YOLO detection: {yolo_time*1000:.1f}ms")
-        yolo_result = yolo_results[0]
         
+        # Process YOLO results
         vis_yolo = frame_bgr.copy()
         box_bbox = None
         detected_fruits = []
         
-        if yolo_result.boxes is not None and len(yolo_result.boxes) > 0:
-            boxes = yolo_result.boxes.xyxy.cpu().numpy()
-            confs = yolo_result.boxes.conf.cpu().numpy()
-            class_ids = yolo_result.boxes.cls.cpu().numpy().astype(int)
-            
-            # Lấy class names từ model đã train
-            if warehouse_yolo_model is not None and hasattr(warehouse_yolo_model, 'names'):
-                class_names = warehouse_yolo_model.names
-                _log_info("YOLO Debug", f"Using trained model class names: {class_names}")
-            else:
-                class_names = ["plastic box", "fruit"]  # Fallback
-                _log_info("YOLO Debug", f"Using fallback class names: {class_names}")
-            
-            # DEBUG: Log all detections
-            _log_info("YOLO Debug", f"Found {len(boxes)} detections with class_ids: {class_ids.tolist()}")
-            _log_info("YOLO Debug", f"Confidences: {confs.tolist()}")
-            
-            for i, (box, conf, cls_id) in enumerate(zip(boxes, confs, class_ids)):
-                x1, y1, x2, y2 = map(int, box)
-                
-                # Get class name from trained model
-                if cls_id < len(class_names):
-                    class_name = class_names[cls_id]
-                else:
-                    class_name = f"class_{cls_id}"  # Unknown class
-                
-                # Draw bbox with different colors
-                if cls_id == 0:  # plastic box (class 0)
-                    color = (0, 255, 0)  # Green
-                    _log_info("YOLO Debug", f"Detected plastic box: {class_name} with conf: {conf:.3f}")
-                else:  # fruits (class 1+)
-                    color = (255, 0, 0)  # Red
-                    _log_info("YOLO Debug", f"Detected fruit: {class_name} with conf: {conf:.3f}")
-                
-                cv2.rectangle(vis_yolo, (x1, y1), (x2, y2), color, 2)
-                
-                label = f"{class_name} {conf:.2f}"
-                cv2.putText(vis_yolo, label, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                
-                detection_info = {
-                    "class": class_name,
-                    "class_id": int(cls_id),
-                    "class_name": class_name,
-                    "confidence": float(conf),
-                    "bbox": [x1, y1, x2, y2]
-                }
-                results["yolo_detections"].append(detection_info)
-                
-                # Collect fruit detections for validation
-                if cls_id != 0:  # Not box class
-                    detected_fruits.append(detection_info)
-                    _log_info("YOLO Debug", f"Fruit detected: {class_name} (ID: {cls_id}) with conf: {conf:.3f}")
-                
-                # Save box bbox for U²-Net
-                if cls_id == 0 and box_bbox is None:
-                    box_bbox = (x1, y1, x2, y2)
+        for result in yolo_results:
+            boxes = result.boxes
+            if boxes is not None:
+                for box in boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    conf = float(box.conf[0])
+                    cls_id = int(box.cls[0])
+                    
+                    # Get class name
+                    class_name = "plastic box" if cls_id == 0 else "fruit"
+                    
+                    # Draw bounding box - FIXED: Use proper BGR colors
+                    color = (0, 255, 0) if cls_id == 0 else (0, 0, 255)  # Green for box, Red for fruit
+                    cv2.rectangle(vis_yolo, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(vis_yolo, f"{class_name}: {conf:.2f}", (x1, y1-10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    
+                    # Store detection info
+                    detection_info = {
+                        "class": class_name,
+                        "class_id": int(cls_id),
+                        "class_name": class_name,
+                        "confidence": float(conf),
+                        "bbox": [x1, y1, x2, y2]
+                    }
+                    results["yolo_detections"].append(detection_info)
+                    
+                    # Collect fruit detections for validation
+                    if cls_id != 0:  # Not box class
+                        detected_fruits.append(detection_info)
+                        _log_info("YOLO Debug", f"Fruit detected: {class_name} (ID: {cls_id}) with conf: {conf:.3f}")
+                    
+                    # Save box bbox for U²-Net
+                    if cls_id == 0 and box_bbox is None:
+                        box_bbox = (x1, y1, x2, y2)
         
         # FIXED: Add fallback fruit detection if YOLO doesn't detect fruits
         if len(detected_fruits) == 0 and box_bbox is not None:
@@ -175,8 +213,17 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
         
         results["validation"] = validation_result
         
+        # FIXED: Use PIL Image for proper color handling in YOLO visualization with detailed logging
+        _log_info("Color Debug", f"YOLO vis_yolo - shape: {vis_yolo.shape}, dtype: {vis_yolo.dtype}")
+        _log_info("Color Debug", f"YOLO sample pixel values (first 3x3): {vis_yolo[:3,:3]}")
+        
         vis_yolo_rgb = cv2.cvtColor(vis_yolo, cv2.COLOR_BGR2RGB)
-        results["visualizations"].append(("YOLO Detection", vis_yolo_rgb))
+        _log_info("Color Debug", f"YOLO BGR to RGB conversion - shape: {vis_yolo_rgb.shape}, dtype: {vis_yolo_rgb.dtype}")
+        _log_info("Color Debug", f"YOLO sample pixel values after BGR->RGB (first 3x3): {vis_yolo_rgb[:3,:3]}")
+        
+        vis_yolo_pil = Image.fromarray(vis_yolo_rgb.astype(np.uint8))
+        _log_info("Color Debug", f"YOLO PIL Image created - mode: {vis_yolo_pil.mode}, size: {vis_yolo_pil.size}")
+        results["visualizations"].append((vis_yolo_pil, "YOLO Detection"))
         
         # Step 3: Segmentation on box region (only if validation passed)
         if box_bbox is not None and validation_result["passed"]:
@@ -234,9 +281,9 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
                     roi_mask = roi_mask_deskewed
                     roi_rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
             
-            # Step 5: Tạo hình chữ nhật hoàn hảo từ mask gốc với adaptive expansion
+            # Step 5: Tạo hình chữ nhật hoàn hảo từ mask gốc với adaptive expansion (nếu được bật)
             rectangle_info = {"applied": False, "original_size": None, "rectangle_size": None}
-            if roi_mask is not None and np.any(roi_mask > 0):
+            if enable_force_rectangle and roi_mask is not None and np.any(roi_mask > 0):
                 rectangle_start = time.time()
                 # Tạo hình chữ nhật hoàn hảo từ mask gốc với expand thông minh
                 roi_mask = _force_rectangle_mask(roi_mask, expand_factor=1.2)
@@ -244,6 +291,8 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
                 _log_info("Warehouse Timing", f"Perfect rectangle creation: {rectangle_time*1000:.1f}ms")
                 _log_success("Warehouse Check", f"Created perfect rectangle from original mask")
                 rectangle_info["applied"] = True
+            elif not enable_force_rectangle:
+                _log_info("Warehouse Check", "Force rectangle disabled - using original mask")
             
             # Create full-size mask for visualization
             # U²-Net: tạo full mask từ ROI với rectangle
@@ -263,10 +312,19 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
             contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(vis_u2net, contours, -1, (0, 255, 0), 2)
             
+            # FIXED: Use PIL Image for proper color handling in U²-Net visualization with detailed logging
+            _log_info("Color Debug", f"U²-Net vis_u2net - shape: {vis_u2net.shape}, dtype: {vis_u2net.dtype}")
+            _log_info("Color Debug", f"U²-Net sample pixel values (first 3x3): {vis_u2net[:3,:3]}")
+            
             vis_u2net_rgb = cv2.cvtColor(vis_u2net, cv2.COLOR_BGR2RGB)
+            _log_info("Color Debug", f"U²-Net BGR to RGB conversion - shape: {vis_u2net_rgb.shape}, dtype: {vis_u2net_rgb.dtype}")
+            _log_info("Color Debug", f"U²-Net sample pixel values after BGR->RGB (first 3x3): {vis_u2net_rgb[:3,:3]}")
+            
+            vis_u2net_pil = Image.fromarray(vis_u2net_rgb.astype(np.uint8))
+            _log_info("Color Debug", f"U²-Net PIL Image created - mode: {vis_u2net_pil.mode}, size: {vis_u2net_pil.size}")
             # Use appropriate model name for visualization
             model_name = "U²-Net Segmentation"
-            results["visualizations"].append((model_name, vis_u2net_rgb))
+            results["visualizations"].append((vis_u2net_pil, model_name))
             
             # Chỉ hiển thị deskewed ROI nếu deskew được bật và có góc xoay
             if enable_deskew and deskew_info.get("angle", 0) != 0:
@@ -274,7 +332,7 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
                 colored_roi_mask = np.zeros_like(roi_rgb)
                 colored_roi_mask[roi_mask > 0] = [0, 255, 0]
                 vis_deskewed = cv2.addWeighted(vis_deskewed, 0.7, colored_roi_mask, 0.3, 0)
-                results["visualizations"].append(("Deskewed ROI", vis_deskewed))
+                results["visualizations"].append((vis_deskewed, "Deskewed ROI"))
             
             # Bỏ ảnh Perfect Rectangle ROI - chỉ giữ YOLO và U²-Net
         else:
@@ -288,7 +346,7 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
                 cv2.putText(vis_validation_failed, validation_result["message"], (50, 100), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 vis_validation_failed_rgb = cv2.cvtColor(vis_validation_failed, cv2.COLOR_BGR2RGB)
-                results["visualizations"].append(("Validation Failed", vis_validation_failed_rgb))
+                results["visualizations"].append((vis_validation_failed_rgb, "Validation Failed"))
             elif box_bbox is None:
                 _log_warning("Warehouse Check", "No box detected by YOLO")
                 # Add no box detected visualization
@@ -296,7 +354,7 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
                 cv2.putText(vis_no_box, "NO BOX DETECTED", (50, 50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
                 vis_no_box_rgb = cv2.cvtColor(vis_no_box, cv2.COLOR_BGR2RGB)
-                results["visualizations"].append(("No Box Detected", vis_no_box_rgb))
+                results["visualizations"].append((vis_no_box_rgb, "No Box Detected"))
         
         # Total processing time
         total_time = time.time() - start_time
@@ -304,11 +362,13 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
         
         # Create log message
         log_msg = f"✅ Warehouse check completed in {total_time*1000:.1f}ms\n\n"
-        if results["qr_info"]:
+        # FIXED: Safe access to qr_info in logging
+        qr_info = results.get("qr_info", {})
+        if qr_info and isinstance(qr_info, dict):
             log_msg += f"📱 QR Info:\n"
-            log_msg += f"   Box: {results['qr_info'].get('Box', 'N/A')}\n"
-            if results['qr_info'].get('items'):
-                log_msg += f"   Items: {results['qr_info']['items']}\n"
+            log_msg += f"   Box: {qr_info.get('Box', 'N/A')}\n"
+            if qr_info.get('items'):
+                log_msg += f"   Items: {qr_info['items']}\n"
         
         log_msg += f"\n📦 YOLO Detections: {len(results['yolo_detections'])}\n"
         for det in results["yolo_detections"]:
@@ -331,10 +391,8 @@ def warehouse_check_frame(frame_bgr: np.ndarray, enable_deskew: bool = False):
             log_msg += f"🔄 Deskew Applied: {results['deskew_info']['angle']:.1f}° ({results['deskew_info']['method']})\n"
         
         # Return visualizations as gallery
-        vis_images = [v[1] for v in results["visualizations"]]
-        
-        return vis_images, log_msg, results
+        return results["visualizations"], log_msg, results
         
     except Exception as e:
-        _log_error("Warehouse Check", e, "Check failed")
-        return None, f"[ERROR] {e}\n{traceback.format_exc()}", None
+        _log_error("Warehouse Check", e, "Warehouse check failed")
+        return None, f"[ERROR] Warehouse check failed: {str(e)}", None

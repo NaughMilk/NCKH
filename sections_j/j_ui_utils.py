@@ -18,9 +18,9 @@ def validate_yolo_label(class_id: int, x_center: float, y_center: float, width: 
     Validate YOLO label values before writing
     Returns True if valid, False if invalid
     """
-    # Check class_id is in valid range [0, 1] for 2-class dataset
-    if not (0 <= class_id <= 1):
-        _log_warning("Label Validation", f"Invalid class_id: {class_id} (must be 0 or 1)")
+    # Check class_id is valid (allow dynamic range)
+    if class_id < 0:
+        _log_warning("Label Validation", f"Invalid class_id: {class_id} (must be >= 0)")
         return False
     
     # Check bbox values are in [0, 1] range

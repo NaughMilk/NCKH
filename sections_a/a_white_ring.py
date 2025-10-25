@@ -47,6 +47,7 @@ def process_white_ring_segmentation(bgr, cfg):
         
         # FIXED: Re-enabled contour filtering to keep only the largest contour (the container)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        largest = None
         if contours:
             # Giữ lại contour có diện tích lớn nhất (là cái hộp)
             largest = max(contours, key=cv2.contourArea)
@@ -57,7 +58,7 @@ def process_white_ring_segmentation(bgr, cfg):
         
         # Apply rectification based on mode (compatible with NCC_PIPELINE_NEW.py)
         rect_pts = None
-        if cfg.force_rectify != "Off":
+        if cfg.force_rectify != "Off" and largest is not None:
             # minAreaRect
             (cx, cy), (w, h), ang = cv2.minAreaRect(largest)
             if cfg.force_rectify == "Square":

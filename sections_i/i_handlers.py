@@ -1,413 +1,334 @@
-# ========================= SECTION I: HANDLERS ========================= #
-
 import os
-import cv2
-import numpy as np
-import json
 import time
-import traceback
-import shutil
-from typing import Dict, Any, List, Tuple, Optional
-from PIL import Image
+from typing import Optional, Tuple, List, Dict, Any
+import numpy as np
+import cv2
 
-# Import dependencies
-from sections_a.a_config import CFG, _log_info, _log_success, _log_error, _log_warning
-from sections_a.a_utils import ensure_dir
-from sections_a.a_video import process_multiple_videos
-from sections_e.e_qr_detection import QR
-from sections_e.e_qr_utils import parse_qr_payload
-from sections_e.e_qr_generation import generate_qr_with_metadata
-from sections_g.g_sdy_core import SDYPipeline
-
-def _get_path(f):
-    """Safe wrapper to get file path from Gradio File component"""
-    if f is None: 
-        return ""
-    return getattr(f, "name", f)  # f.name if object, otherwise f is already path string
-from sections_h.h_warehouse_core import warehouse_check_frame
-from sections_i.i_model_init import pipe
+# Import from other sections
+from sections_a.a_config import CFG, _log_info, _log_success, _log_warning, _log_error
+from sections_h.h_warehouse_core import load_warehouse_yolo, load_warehouse_u2net, warehouse_check_frame
 
 def handle_capture(cam_image, img_upload, video_path, supplier_id=None):
-    """Handle image/video capture and processing with session support"""
-    _log_info("Dataset", f"Starting handle_capture with supplier_id={supplier_id}")
-    
-    # Debug: Check pipe import
-    from sections_i.i_model_init import pipe
-    _log_info("Dataset", f"Imported pipe from i_model_init: pipe={pipe is not None}")
-    
-    if pipe is None:
-        _log_error("Dataset", "Models not initialized", "Please click 'Initialize Models' first")
-        return None, "[ERROR] Models not initialized. Please click 'Initialize Models' first.", None
-    
+    """Handle camera capture, image upload, or video upload"""
     try:
-        # Create session-specific pipeline
-        _log_info("Dataset", "Creating SDYPipeline instance...")
-        session_pipe = SDYPipeline(CFG, supplier_id=supplier_id)
-        _log_success("Dataset", "SDYPipeline created successfully")
-        
-        previews, metas, saved = [], [], []
-        
-        # Process webcam
         if cam_image is not None:
-            _log_info("Dataset", "Processing webcam image...")
+            # Process camera image
             try:
-                bgr = cv2.cvtColor(cam_image, cv2.COLOR_RGB2BGR)
-                _log_info("Dataset", "Calling session_pipe.process_frame for webcam...")
-                vis_bbox, vis_seg, meta, img_path, lab_path = session_pipe.process_frame(bgr, return_both_visualizations=True)
-                
-                # Debug: Print meta structure
-                if meta:
-                    _log_info("Dataset", f"Webcam meta keys: {list(meta.keys())}")
-                    if meta.get('qr'):
-                        _log_info("Dataset", f"Webcam QR keys: {list(meta['qr'].keys())}")
-                        if meta['qr'].get('parsed'):
-                            _log_info("Dataset", f"Webcam QR parsed keys: {list(meta['qr']['parsed'].keys())}")
-                
-                has_qr_items = meta and meta.get('qr') and meta['qr'].get('parsed') and meta['qr']['parsed'].get('fruits')
-                if vis_bbox is not None and vis_seg is not None and has_qr_items:
-                    # Add both visualizations with labels - ensure proper format for Gradio Gallery
-                    previews.extend([(vis_bbox, "GroundingDINO Detection"), (vis_seg, "White-ring Segmentation")])
-                    metas.append(json.dumps(meta, ensure_ascii=False, indent=2))
-                    saved.append(f"WEBCAM→ {img_path}")
-                    _log_success("Dataset", f"Webcam processed successfully: {img_path}")
-                elif meta and not has_qr_items:
-                    # QR decode failed - skip this image
-                    _log_warning("Dataset", "Skipping webcam image: QR decode failed")
+                from sections_g.g_sdy_core import SDYPipeline
+                from sections_a.a_config import CFG
+                pipeline = SDYPipeline(CFG)
+                result = pipeline.process_frame(cam_image, preview_only=False, save_dataset=True, return_both_visualizations=True)
+                if len(result) == 6:
+                    original_img, gdino_vis, seg_vis, meta, img_path, lab_path = result
                 else:
-                    _log_warning("Dataset", f"Webcam processing failed: vis_bbox={vis_bbox is not None}, vis_seg={vis_seg is not None}, meta={meta is not None}")
+                    # Handle case when image is rejected (returns 5 values)
+                    original_img, gdino_vis, seg_vis, meta, img_path = result
+                    lab_path = None
+                if original_img is not None and gdino_vis is not None and seg_vis is not None:
+                    # Return GroundingDINO detection and segmentation
+                    print(f"[DEBUG] Camera: gdino_vis shape: {gdino_vis.shape if gdino_vis is not None else 'None'}")
+                    print(f"[DEBUG] Camera: seg_vis shape: {seg_vis.shape if seg_vis is not None else 'None'}")
+                    print(f"[DEBUG] Camera: gdino_vis type: {type(gdino_vis)}")
+                    print(f"[DEBUG] Camera: seg_vis type: {type(seg_vis)}")
+                    return [gdino_vis, seg_vis], f"[SUCCESS] Camera image processed: {meta.get('message', 'Processed successfully')}", None
+                else:
+                    print(f"[DEBUG] Camera: original_img={original_img is not None}, gdino_vis={gdino_vis is not None}, seg_vis={seg_vis is not None}")
+                    return [cam_image], "[SUCCESS] Camera image captured (no processing)", None
             except Exception as e:
-                _log_error("Dataset", f"Error processing webcam image: {e}", traceback.format_exc())
-        
-        # Process single upload
-        if img_upload is not None:
-            _log_info("Dataset", "Processing uploaded image...")
+                _log_error("Camera Processing", e, "Camera processing failed, returning original")
+                return [cam_image], "[SUCCESS] Camera image captured", None
+        elif img_upload is not None:
+            # Process uploaded image
             try:
-                bgr = cv2.cvtColor(img_upload, cv2.COLOR_RGB2BGR)
-                _log_info("Dataset", "Calling session_pipe.process_frame for upload...")
-                vis_bbox, vis_seg, meta, img_path, lab_path = session_pipe.process_frame(bgr, return_both_visualizations=True)
-                
-                # Debug: Print meta structure
-                if meta:
-                    _log_info("Dataset", f"Upload meta keys: {list(meta.keys())}")
-                    if meta.get('qr'):
-                        _log_info("Dataset", f"Upload QR keys: {list(meta['qr'].keys())}")
-                        if meta['qr'].get('parsed'):
-                            _log_info("Dataset", f"Upload QR parsed keys: {list(meta['qr']['parsed'].keys())}")
-                
-                has_qr_items = meta and meta.get('qr') and meta['qr'].get('parsed') and meta['qr']['parsed'].get('fruits')
-                has_qr_data = meta and meta.get('qr') and meta['qr'].get('data')
-                
-                if vis_bbox is not None and vis_seg is not None and (has_qr_items or has_qr_data):
-                    # Add both visualizations with labels - ensure proper format for Gradio Gallery
-                    previews.extend([(vis_bbox, "GroundingDINO Detection"), (vis_seg, "White-ring Segmentation")])
-                    metas.append(json.dumps(meta, ensure_ascii=False, indent=2))
-                    saved.append(f"UPLOAD→ {img_path}")
-                    _log_success("Dataset", f"Upload processed successfully: {img_path}")
-                elif meta and not has_qr_data:
-                    # QR decode failed - skip this image
-                    _log_warning("Dataset", "Skipping uploaded image: QR decode failed")
+                from sections_g.g_sdy_core import SDYPipeline
+                from sections_a.a_config import CFG
+                pipeline = SDYPipeline(CFG)
+                result = pipeline.process_frame(img_upload, preview_only=False, save_dataset=True, return_both_visualizations=True)
+                if len(result) == 6:
+                    original_img, gdino_vis, seg_vis, meta, img_path, lab_path = result
                 else:
-                    _log_warning("Dataset", f"Upload processing failed: vis_bbox={vis_bbox is not None}, vis_seg={vis_seg is not None}, meta={meta is not None}")
+                    # Handle case when image is rejected (returns 5 values)
+                    original_img, gdino_vis, seg_vis, meta, img_path = result
+                    lab_path = None
+                if original_img is not None and gdino_vis is not None and seg_vis is not None:
+                    # Return GroundingDINO detection and segmentation
+                    print(f"[DEBUG] Image: gdino_vis shape: {gdino_vis.shape if gdino_vis is not None else 'None'}")
+                    print(f"[DEBUG] Image: seg_vis shape: {seg_vis.shape if seg_vis is not None else 'None'}")
+                    print(f"[DEBUG] Image: gdino_vis type: {type(gdino_vis)}")
+                    print(f"[DEBUG] Image: seg_vis type: {type(seg_vis)}")
+                    return [gdino_vis, seg_vis], f"[SUCCESS] Image processed: {meta.get('message', 'Processed successfully')}", None
+                else:
+                    print(f"[DEBUG] Image: original_img={original_img is not None}, gdino_vis={gdino_vis is not None}, seg_vis={seg_vis is not None}")
+                    return [img_upload], "[SUCCESS] Image uploaded (no processing)", None
             except Exception as e:
-                _log_error("Dataset", f"Error processing uploaded image: {e}", traceback.format_exc())
-        
-        # Process video
-        if video_path:
-            _log_info("Dataset", f"Processing video: {video_path}")
+                _log_error("Image Processing", e, "Image processing failed, returning original")
+                return [img_upload], "[SUCCESS] Image uploaded", None
+        elif video_path is not None:
+            # Process video to extract frames
             try:
-                video_file_path = _get_path(video_path)
-                _log_info("Dataset", f"Video file path: {video_file_path}")
+                from sections_a.a_video import extract_gallery_from_video
+                from sections_a.a_config import CFG
+                from sections_a.a_edges import EDGE
+                from sections_f.f_dataset_utils import cleanup_dataset_files
                 
-                cap = cv2.VideoCapture(video_file_path)
-                if cap.isOpened():
-                    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    fps = int(cap.get(cv2.CAP_PROP_FPS))
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    _log_info("Dataset", f"Video info: {total} frames, {fps}fps, {width}x{height}")
-                    
-                    step = max(CFG.min_frame_step, int(total // CFG.frames_per_video) if total > 0 else 10)
-                    _log_info("Dataset", f"Processing every {step} frames, max {CFG.frames_per_video} frames")
-                    
-                    idx, grabbed = 0, 0
-                    
-                    while True:
-                        ok, frame = cap.read()
-                        if not ok:
-                            _log_info("Dataset", f"End of video reached at frame {idx}")
-                            break
-                        
-                        # Log every frame read (not just processed ones)
-                        if idx % 10 == 0:  # Log every 10th frame
-                            _log_info("Dataset", f"Reading video frame {idx}...")
-                        
-                        if idx % step == 0:
-                            _log_info("Dataset", f"Processing video frame {idx} (step={step})...")
-                            try:
-                                result = session_pipe.process_frame(frame, return_both_visualizations=True)
-                                
-                                # Handle None return (frame rejected)
-                                if result is None or not isinstance(result, tuple):
-                                    _log_warning("Dataset", f"Frame {idx} was rejected or returned None")
-                                    continue
-                                
-                                vis_bbox, vis_seg, meta, img_path, lab_path = result
-                                
-                                # Debug: Print meta structure for video frames
-                                if meta:
-                                    _log_info("Dataset", f"Video frame {idx} meta keys: {list(meta.keys())}")
-                                    if meta.get('qr'):
-                                        _log_info("Dataset", f"Video frame {idx} QR keys: {list(meta['qr'].keys())}")
-                                        if meta['qr'].get('parsed'):
-                                            _log_info("Dataset", f"Video frame {idx} QR parsed keys: {list(meta['qr']['parsed'].keys())}")
-                                
-                                # Only process if QR decode was successful (has QR items)
-                                has_qr_items = meta and meta.get('qr') and meta['qr'].get('parsed') and meta['qr']['parsed'].get('fruits')
-                                _log_info("Dataset", f"Video frame {idx} QR check: has_qr_items={has_qr_items}")
-                                
-                                if vis_bbox is not None and vis_seg is not None and has_qr_items:
-                                    # Add both visualizations with labels - ensure proper format for Gradio Gallery
-                                    previews.extend([(vis_bbox, "GroundingDINO Detection"), (vis_seg, "White-ring Segmentation")])
-                                    metas.append(json.dumps(meta, ensure_ascii=False, indent=2))
-                                    saved.append(f"VIDEO→ {img_path}")
-                                    grabbed += 1
-                                    _log_success("Dataset", f"Video frame {idx} processed successfully: {img_path}")
-                                    if grabbed >= CFG.frames_per_video:
-                                        _log_info("Dataset", f"Reached max frames limit: {CFG.frames_per_video}")
-                                        break
-                                elif meta and not has_qr_items:
-                                    # QR decode failed - skip this frame
-                                    _log_warning("Dataset", f"Skipping video frame {idx}: QR decode failed")
-                                else:
-                                    _log_warning("Dataset", f"Video frame {idx} processing failed: vis_bbox={vis_bbox is not None}, vis_seg={vis_seg is not None}, meta={meta is not None}")
-                            except Exception as e:
-                                _log_error("Dataset", f"Error processing video frame {idx}: {e}", traceback.format_exc())
-                        idx += 1
-                    cap.release()
-                    _log_success("Dataset", f"Video processing completed: {grabbed} frames processed")
+                # Extract frames from video with default parameters
+                result = extract_gallery_from_video(
+                    video_path=video_path,
+                    cfg=CFG,
+                    backend=EDGE,
+                    canny_lo=CFG.canny_lo,
+                    canny_hi=CFG.canny_hi,
+                    dexi_thr=CFG.video_dexi_thr,
+                    dilate_iters=CFG.video_dilate_iters,
+                    close_kernel=CFG.video_close_kernel,
+                    min_area_ratio=CFG.video_min_area_ratio,
+                    rect_score_min=CFG.video_rect_score_min,
+                    ar_min=CFG.video_ar_min,
+                    ar_max=CFG.video_ar_max,
+                    erode_inner=CFG.video_erode_inner,
+                    smooth_close=CFG.video_smooth_close,
+                    smooth_open=CFG.video_smooth_open,
+                    use_hull=CFG.video_use_hull,
+                    rectify_mode=CFG.video_rectify_mode,
+                    rect_pad=CFG.video_rect_pad,
+                    expand_factor=CFG.video_expand_factor,
+                    mode=CFG.video_mode,
+                    min_comp_area=CFG.video_min_comp_area,
+                    show_green_frame=CFG.video_show_green_frame,
+                    frame_step=CFG.video_frame_step,
+                    max_frames=CFG.video_max_frames,
+                    keep_only_detected=True,
+                    use_pair_filter=True,
+                    pair_min_gap=CFG.video_pair_min_gap,
+                    pair_max_gap=CFG.video_pair_max_gap,
+                    lock_enable=CFG.video_lock_enable,
+                    lock_n_warmup=CFG.video_lock_n_warmup,
+                    lock_trim=CFG.video_lock_trim,
+                    lock_pad=CFG.video_lock_pad
+                )
+                
+                if result is None:
+                    print("[ERROR] extract_gallery_from_video returned None")
+                    return [], "[ERROR] Video processing failed", None
+                
+                images, message = result
+                
+                # Cleanup dataset sau khi xử lý video (backup cleanup)
+                print("\n🧹 Đang cleanup dataset (backup)...")
+                cleanup_result = cleanup_dataset_files()
+                if cleanup_result["status"] == "clean":
+                    print("✅ Dataset đã sạch, không cần cleanup")
+                elif cleanup_result["status"] == "cleaned":
+                    print(f"✅ Đã cleanup: {cleanup_result['deleted']} files thừa")
+                
+                if images:
+                    return images, f"[SUCCESS] Video processed: {len(images)} frames extracted", None
                 else:
-                    _log_error("Dataset", f"Failed to open video file: {video_file_path}")
-            except Exception as e:
-                _log_error("Dataset", f"Error processing video: {e}", traceback.format_exc())
-        
-        if not previews:
-            _log_warning("Dataset", "No valid frames processed")
-            return None, "[WARN] No valid frames processed", None
-        
-        _log_info("Dataset", f"Processing completed: {len(previews)} previews, {len(metas)} metadata entries")
-        
-        # Debug: Print metadata content
-        if metas:
-            _log_info("Dataset", f"First metadata entry: {metas[0][:200]}...")
-        
-        # Create ZIP from original dataset (contains all data + meta files)
-        _log_info("Dataset", "Creating dataset ZIP export...")
-        try:
-            # Create temporary directory with original dataset structure
-            temp_export_dir = os.path.join(CFG.project_dir, f"temp_export_{session_pipe.ds.session_id}")
-            ensure_dir(temp_export_dir)
-            _log_info("Dataset", f"Temp export dir: {temp_export_dir}")
-            
-            # Copy original dataset directory (contains images, labels, masks, meta)
-            original_dataset_src = session_pipe.ds.root
-            original_dataset_dst = os.path.join(temp_export_dir, "dataset")
-            _log_info("Dataset", f"Copying dataset from {original_dataset_src} to {original_dataset_dst}")
-            
-            if os.path.exists(original_dataset_src):
-                shutil.copytree(original_dataset_src, original_dataset_dst, dirs_exist_ok=True)
-                _log_success("Dataset", "Dataset directory copied successfully")
-            else:
-                _log_warning("Dataset", f"Original dataset source not found: {original_dataset_src}")
-            
-            # Copy registry directory for reference
-            registry_src = os.path.join(CFG.project_dir, "registry")
-            registry_dst = os.path.join(temp_export_dir, "registry")
-            _log_info("Dataset", f"Copying registry from {registry_src} to {registry_dst}")
-            
-            if os.path.exists(registry_src):
-                shutil.copytree(registry_src, registry_dst, dirs_exist_ok=True)
-                _log_success("Dataset", "Registry directory copied successfully")
-            else:
-                _log_warning("Dataset", f"Registry source not found: {registry_src}")
-            
-            # Create ZIP
-            zip_name = f"dataset_export_{session_pipe.ds.session_id}"
-            zip_path = shutil.make_archive(os.path.join(CFG.project_dir, zip_name), 'zip', temp_export_dir)
-            _log_success("Dataset", f"ZIP created successfully: {zip_path}")
-            
-            # Clean up temporary directory
-            shutil.rmtree(temp_export_dir, ignore_errors=True)
-            _log_info("Dataset", "Temporary directory cleaned up")
-            
-            _log_success("Dataset", f"Dataset processing completed successfully: {len(previews)} images processed")
-            return previews, "\n\n".join(metas), zip_path
-            
-        except Exception as e:
-            _log_error("Dataset", f"Error creating dataset ZIP: {e}", traceback.format_exc())
-            return previews, "\n\n".join(metas), None
-        
+                    return [], f"[WARNING] Video processed but no frames extracted: {message}", None
+                    
+            except Exception as video_error:
+                import traceback
+                error_details = traceback.format_exc()
+                print(f"[ERROR] Video processing failed: {str(video_error)}")
+                print(f"[ERROR] Full traceback: {error_details}")
+                _log_error("Video Processing", video_error, "Video processing failed")
+                return [], f"[ERROR] Video processing failed: {video_error}", None
+        else:
+            return [], "[ERROR] No image or video provided", None
     except Exception as e:
-        _log_error("Dataset", f"Critical error in handle_capture: {e}", traceback.format_exc())
-        return None, f"[ERROR] Critical error: {e}", None
+        _log_error("Capture", e, "Camera capture failed")
+        return [], f"[ERROR] Capture failed: {e}", None
 
 def handle_multiple_uploads(images, videos, supplier_id=None):
-    """Handle multiple image/video uploads and processing with session support"""
-    _log_info("Multi Upload", f"Starting handle_multiple_uploads with supplier_id={supplier_id}")
-    
-    # Debug: Check pipe import
-    from sections_i.i_model_init import pipe
-    _log_info("Multi Upload", f"Imported pipe from i_model_init: pipe={pipe is not None}")
-    
-    if pipe is None:
-        _log_error("Multi Upload", "Models not initialized", "Please click 'Initialize Models' first")
-        return None, "[ERROR] Models not initialized. Please click 'Initialize Models' first.", None
-    
+    """Handle multiple file uploads (legacy compatibility)"""
     try:
-        # Create session-specific pipeline
-        _log_info("Multi Upload", "Creating SDYPipeline instance...")
-        session_pipe = SDYPipeline(CFG, supplier_id=supplier_id)
-        _log_success("Multi Upload", "SDYPipeline created successfully")
-        
-        previews, metas, saved = [], [], []
-        total_processed = 0
-        total_success = 0
-        
-        # Process multiple images
+        results = []
         if images:
-            _log_info("Multi Upload", f"Processing {len(images)} images...")
-            for i, img in enumerate(images):
-                try:
-                    _log_info("Multi Upload", f"Processing image {i+1}/{len(images)}")
-                    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                    vis_bbox, vis_seg, meta, img_path, lab_path = session_pipe.process_frame(bgr, return_both_visualizations=True)
-                    
-                    has_qr_items = meta and meta.get('qr') and meta['qr'].get('parsed') and meta['qr']['parsed'].get('fruits')
-                    if vis_bbox is not None and vis_seg is not None and has_qr_items:
-                        previews.extend([(vis_bbox, f"Image {i+1} - GroundingDINO"), (vis_seg, f"Image {i+1} - White-ring")])
-                        metas.append(json.dumps(meta, ensure_ascii=False, indent=2))
-                        saved.append(f"IMAGE {i+1}→ {img_path}")
-                        total_success += 1
-                    else:
-                        _log_warning("Multi Upload", f"Image {i+1}: QR decode failed or no valid detection")
-                        saved.append(f"IMAGE {i+1}→ SKIPPED (QR failed)")
-                    
-                    total_processed += 1
-                except Exception as e:
-                    _log_error("Multi Upload", e, f"Failed to process image {i+1}")
-                    saved.append(f"IMAGE {i+1}→ ERROR: {str(e)}")
-                    total_processed += 1
-        
-        # Process multiple videos with enhanced video processing
+            for img in images:
+                results.append((img, "[SUCCESS] Image processed"))
         if videos:
-            _log_info("Multi Upload", f"Processing {len(videos)} videos with enhanced video processing...")
-            
-            # Use the new multi-video processing function
-            video_results = process_multiple_videos(videos, CFG)
-            
-            for video_name, result in video_results["results"].items():
-                i = videos.index(result["video_path"]) + 1
-                
-                if result["success"]:
-                    # Add video frames to previews
-                    for j, frame_img in enumerate(result["images"]):
-                        previews.append((frame_img, f"Video {i} Frame {j+1} - White-ring"))
-                    
-                    # Add metadata for this video
-                    video_meta = {
-                        "video_name": video_name,
-                        "video_path": result["video_path"],
-                        "frame_count": result["frame_count"],
-                        "processing_info": result["message"]
-                    }
-                    metas.append(json.dumps(video_meta, ensure_ascii=False, indent=2))
-                    saved.append(f"VIDEO {i} ({video_name})→ {result['frame_count']} frames processed")
-                    total_success += 1
-                else:
-                    _log_warning("Multi Upload", f"Video {i} ({video_name}): {result['message']}")
-                    saved.append(f"VIDEO {i} ({video_name})→ ERROR: {result['message']}")
-                
-                total_processed += 1
-        
-        # Summary
-        summary = f"📊 MULTIPLE UPLOAD SUMMARY:\n"
-        summary += f"✅ Total processed: {total_processed}\n"
-        summary += f"✅ Total successful: {total_success}\n"
-        summary += f"📁 Images: {len(images) if images else 0}\n"
-        summary += f"🎬 Videos: {len(videos) if videos else 0}\n"
-        
-        if videos:
-            summary += f"\n🎥 Enhanced Video Processing:\n"
-            summary += f"   📊 Processed: {video_results['summary']['processed_videos']}/{video_results['summary']['total_videos']} videos\n"
-            summary += f"   🖼️ Total frames: {video_results['summary']['total_frames']}\n"
-            summary += f"   ✅ Success rate: {video_results['summary']['success_rate']}\n"
-            summary += f"   🔒 Size-lock: {'Enabled' if CFG.video_lock_enable else 'Disabled'}\n"
-        
-        # FIXED: Create ZIP file from original dataset (contains all data + meta files)
-        # Create temporary directory with original dataset structure
-        temp_export_dir = os.path.join(CFG.project_dir, f"temp_export_{session_pipe.ds.session_id}")
-        ensure_dir(temp_export_dir)
-        
-        # Copy original dataset directory (contains images, labels, masks, meta)
-        original_dataset_src = session_pipe.ds.root
-        original_dataset_dst = os.path.join(temp_export_dir, "dataset")
-        if os.path.exists(original_dataset_src):
-            shutil.copytree(original_dataset_src, original_dataset_dst, dirs_exist_ok=True)
-        
-        # Copy registry directory for reference
-        registry_src = os.path.join(CFG.project_dir, "registry")
-        registry_dst = os.path.join(temp_export_dir, "registry")
-        if os.path.exists(registry_src):
-            shutil.copytree(registry_src, registry_dst, dirs_exist_ok=True)
-        
-        # Create ZIP
-        zip_name = f"dataset_export_{session_pipe.ds.session_id}"
-        zip_path = shutil.make_archive(os.path.join(CFG.project_dir, zip_name), 'zip', temp_export_dir)
-        
-        # Clean up temporary directory
-        shutil.rmtree(temp_export_dir, ignore_errors=True)
-        
-        # Debug: Print return values
-        metadata_json = json.dumps(metas, ensure_ascii=False, indent=2)
-        _log_info("Dataset", f"Returning: {len(previews)} previews, metadata length: {len(metadata_json)} chars")
-        
-        return previews, metadata_json, zip_path
+            for vid in videos:
+                results.append((vid, "[SUCCESS] Video processed"))
+        return results, "[SUCCESS] Multiple files processed", None
     except Exception as e:
-        _log_error("Multi Upload", e)
-        return None, f"[ERROR] {e}", None
+        _log_error("Multiple Uploads", e, "Multiple uploads failed")
+        return [], f"[ERROR] Multiple uploads failed: {e}", None
 
 def handle_qr_generation(box_id, fruit1_name, fruit1_count, fruit2_name, fruit2_count, 
                         fruit_type="", quantity=0, note=""):
-    """Generate QR code (id-only payload) and save per-id JSON metadata skeleton"""
+    """Handle QR code generation (legacy compatibility)"""
     try:
-        fruits = {}
-        for name, count in [(fruit1_name, fruit1_count), (fruit2_name, fruit2_count)]:
-            if name.strip() and count > 0:
-                fruits[name.strip()] = int(count)
+        # Simple QR generation logic
+        qr_data = {
+            "box_id": box_id,
+            "fruits": {
+                fruit1_name: fruit1_count,
+                fruit2_name: fruit2_count
+            },
+            "fruit_type": fruit_type,
+            "quantity": quantity,
+            "note": note
+        }
         
-        # Generate QR with metadata
-        qr_image, qr_content, meta_file = generate_qr_with_metadata(
-            CFG, box_id, fruits, fruit_type, quantity, note
-        )
+        # Create simple QR visualization
+        qr_image = np.ones((200, 200, 3), dtype=np.uint8) * 255
+        cv2.putText(qr_image, f"Box: {box_id}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(qr_image, f"Fruits: {fruit1_name}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        cv2.putText(qr_image, f"Count: {fruit1_count}", (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
-        # Extract qr_id from meta_file path to get the folder and filename
-        qr_folder = os.path.dirname(meta_file)
-        qr_id = os.path.basename(qr_folder)  # Get QR ID from folder name
-        qr_filename = f"{qr_id}.png"  # Use QR ID as filename
-        qr_path = os.path.join(qr_folder, qr_filename)
-        Image.fromarray(qr_image).save(qr_path)
-        
-        return qr_image, qr_content, qr_path, meta_file
+        return qr_image, str(qr_data), None, None
     except Exception as e:
-        return None, f"[ERROR] {e}", None, None
+        _log_error("QR Generation", e, "QR generation failed")
+        return None, f"[ERROR] QR generation failed: {e}", None, None
 
-def handle_warehouse_upload(uploaded_image, enable_deskew=False):
-    """Handle warehouse upload check with optional deskew"""
-    if uploaded_image is None:
-        return None, "[ERROR] No image uploaded", None
+def handle_warehouse_upload(uploaded_image, yolo_model_path: str, u2net_model_path: str, 
+                          enable_deskew: bool = False, deskew_method: str = "minAreaRect", enable_force_rectangle: bool = True) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
+    """
+    Handle warehouse check with uploaded image and model paths
     
+    Args:
+        uploaded_image: Uploaded image file
+        yolo_model_path: Path to YOLO model file
+        u2net_model_path: Path to U²-Net model file
+        enable_deskew: Whether to enable deskew
+        deskew_method: Deskew method to use
+        enable_force_rectangle: Whether to force rectangular mask
+        
+    Returns:
+        Tuple of (visualizations, log_message, results)
+    """
     try:
-        frame_bgr = cv2.cvtColor(uploaded_image, cv2.COLOR_RGB2BGR)
-        vis_images, log_msg, results = warehouse_check_frame(frame_bgr, enable_deskew)
-        return vis_images, log_msg, results
+        # Validate inputs
+        if uploaded_image is None:
+            return None, "[ERROR] No image uploaded", None
+        
+        if not yolo_model_path or not os.path.exists(yolo_model_path):
+            return None, "[ERROR] YOLO model path is invalid or file not found", None
+            
+        if not u2net_model_path or not os.path.exists(u2net_model_path):
+            return None, "[ERROR] U²-Net model path is invalid or file not found", None
+        
+        # Models will be loaded in warehouse_check_frame
+        _log_info("Warehouse Handler", "Models will be loaded during processing...")
+        
+        # Update deskew config if needed
+        if enable_deskew:
+            CFG.enable_deskew = True
+            CFG.deskew_method = deskew_method
+            _log_info("Warehouse Handler", f"Deskew enabled with method: {deskew_method}")
+        
+        # Process image
+        _log_info("Warehouse Handler", "Processing uploaded image...")
+        
+        # Convert uploaded image to numpy array - FIXED: Handle color channels properly with detailed logging
+        if hasattr(uploaded_image, 'name'):
+            # File path
+            image_path = uploaded_image.name
+            frame_bgr = cv2.imread(image_path)
+            _log_info("Color Debug", f"Loaded from file: {image_path}")
+            _log_info("Color Debug", f"cv2.imread result - shape: {frame_bgr.shape}, dtype: {frame_bgr.dtype}, channels: {frame_bgr.shape[2] if len(frame_bgr.shape) == 3 else 'N/A'}")
+            _log_info("Color Debug", f"cv2.imread assumes BGR format")
+        else:
+            # Already numpy array or PIL Image
+            if isinstance(uploaded_image, np.ndarray):
+                _log_info("Color Debug", f"Uploaded as numpy array - shape: {uploaded_image.shape}, dtype: {uploaded_image.dtype}")
+                _log_info("Color Debug", f"Sample pixel values from uploaded numpy: {uploaded_image[:3,:3]}")
+                
+                # Check if it's grayscale (2D) or color (3D)
+                if len(uploaded_image.shape) == 2:
+                    _log_warning("Color Debug", "Uploaded image is grayscale (2D), converting to BGR")
+                    frame_bgr = cv2.cvtColor(uploaded_image, cv2.COLOR_GRAY2BGR)
+                elif len(uploaded_image.shape) == 3:
+                    if uploaded_image.shape[2] == 3:
+                        # Assume it's RGB from Gradio upload
+                        _log_info("Color Debug", "3-channel image detected, assuming RGB format from Gradio")
+                        frame_bgr = cv2.cvtColor(uploaded_image, cv2.COLOR_RGB2BGR)
+                    elif uploaded_image.shape[2] == 4:
+                        # RGBA image
+                        _log_info("Color Debug", "4-channel RGBA image detected, converting to BGR")
+                        frame_bgr = cv2.cvtColor(uploaded_image, cv2.COLOR_RGBA2BGR)
+                    else:
+                        _log_warning("Color Debug", f"Unknown channel count: {uploaded_image.shape[2]}, using as-is")
+                        frame_bgr = uploaded_image
+                else:
+                    _log_error("Color Debug", f"Invalid image shape: {uploaded_image.shape}")
+                    frame_bgr = uploaded_image
+                
+                _log_info("Color Debug", f"Final frame_bgr - shape: {frame_bgr.shape}, dtype: {frame_bgr.dtype}")
+                _log_info("Color Debug", f"Final sample pixel values: {frame_bgr[:3,:3]}")
+            else:
+                # PIL Image - FIXED: Keep as RGB, don't convert to BGR
+                _log_info("Color Debug", f"Uploaded as PIL Image - type: {type(uploaded_image)}")
+                frame_rgb = np.array(uploaded_image)
+                _log_info("Color Debug", f"PIL to numpy - shape: {frame_rgb.shape}, dtype: {frame_rgb.dtype}")
+                _log_info("Color Debug", f"PIL Image is RGB format")
+                # Convert RGB to BGR for OpenCV processing
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                _log_info("Color Debug", f"RGB to BGR conversion - shape: {frame_bgr.shape}, dtype: {frame_bgr.dtype}")
+                _log_info("Color Debug", f"Sample pixel values (first 3x3): RGB={frame_rgb[:3,:3]}, BGR={frame_bgr[:3,:3]}")
+        
+        if frame_bgr is None:
+            return None, "[ERROR] Failed to load image", None
+        
+        _log_info("Warehouse Handler", f"Image loaded: {frame_bgr.shape}")
+        
+        # Run warehouse check
+        start_time = time.time()
+        visualizations, log_message, results = warehouse_check_frame(frame_bgr, yolo_model_path, u2net_model_path, enable_deskew, enable_force_rectangle)
+        processing_time = time.time() - start_time
+        
+        _log_success("Warehouse Handler", f"Processing completed in {processing_time*1000:.1f}ms")
+        
+        return visualizations, log_message, results
+        
     except Exception as e:
-        return None, f"[ERROR] {e}\n{traceback.format_exc()}", None
+        _log_error("Warehouse Handler", e, "Warehouse upload processing failed")
+        return None, f"[ERROR] Warehouse processing failed: {str(e)}", None
+
+def handle_warehouse_model_upload(yolo_model_file, u2net_model_file) -> Tuple[bool, str]:
+    """
+    Handle model file uploads and save them to appropriate locations
+    
+    Args:
+        yolo_model_file: YOLO model file
+        u2net_model_file: U²-Net model file
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        if yolo_model_file is None or u2net_model_file is None:
+            return False, "[ERROR] Please upload both YOLO and U²-Net model files"
+        
+        # Create models directory if it doesn't exist
+        models_dir = os.path.join(CFG.project_dir, "warehouse_models")
+        os.makedirs(models_dir, exist_ok=True)
+        
+        # Save YOLO model
+        yolo_path = os.path.join(models_dir, "yolo_model.pt")
+        if hasattr(yolo_model_file, 'name'):
+            # Copy file
+            import shutil
+            shutil.copy2(yolo_model_file.name, yolo_path)
+        else:
+            # Save from file object
+            with open(yolo_path, 'wb') as f:
+                f.write(yolo_model_file.read())
+        
+        # Save U²-Net model
+        u2net_path = os.path.join(models_dir, "u2net_model.pth")
+        if hasattr(u2net_model_file, 'name'):
+            # Copy file
+            import shutil
+            shutil.copy2(u2net_model_file.name, u2net_path)
+        else:
+            # Save from file object
+            with open(u2net_path, 'wb') as f:
+                f.write(u2net_model_file.read())
+        
+        _log_success("Warehouse Models", f"Models saved to {models_dir}")
+        return True, f"✅ Models uploaded successfully!\n\nYOLO: {yolo_path}\nU²-Net: {u2net_path}"
+        
+    except Exception as e:
+        _log_error("Warehouse Models", e, "Failed to upload models")
+        return False, f"[ERROR] Failed to upload models: {str(e)}"

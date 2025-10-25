@@ -1,5 +1,51 @@
 import cv2
 import numpy as np
+import os
+import glob
+
+def cleanup_dataset_files(dataset_path="sdy_project/dataset_sdy_box"):
+    """Xóa images/masks không có metadata tương ứng"""
+    
+    meta_dir = os.path.join(dataset_path, "meta")
+    img_dir = os.path.join(dataset_path, "images", "train")
+    mask_dir = os.path.join(dataset_path, "masks", "train")
+    
+    if not os.path.exists(img_dir):
+        print(f"❌ Không tìm thấy {img_dir}")
+        return {"status": "error", "message": f"Không tìm thấy {img_dir}"}
+    
+    # Lấy danh sách metadata files
+    meta_files = set()
+    if os.path.exists(meta_dir):
+        meta_files = set(os.path.splitext(f)[0] for f in os.listdir(meta_dir) if f.endswith('.json'))
+    
+    # Lấy danh sách image files
+    image_files = glob.glob(os.path.join(img_dir, "*.jpg"))
+    
+    deleted_count = 0
+    kept_count = 0
+    
+    # Xóa images không có metadata
+    for img_file in image_files:
+        base_name = os.path.splitext(os.path.basename(img_file))[0]
+        if base_name not in meta_files:
+            os.remove(img_file)
+            deleted_count += 1
+            
+            mask_file = os.path.join(mask_dir, f"{base_name}.png")
+            if os.path.exists(mask_file):
+                os.remove(mask_file)
+            
+            print(f"🗑️  Xóa: {base_name}")
+        else:
+            kept_count += 1
+    
+    if deleted_count == 0:
+        print(f"✅ Dataset đã sạch: {kept_count} files khớp hoàn toàn")
+        return {"status": "clean", "kept": kept_count, "deleted": 0}
+    else:
+        print(f"✅ Cleanup hoàn thành: Giữ {kept_count}, Xóa {deleted_count}")
+        return {"status": "cleaned", "kept": kept_count, "deleted": deleted_count}
 
 def mask_to_polygon_norm(mask: np.ndarray, img_w: int, img_h: int, max_points: int = 200):
     """Convert mask to normalized polygon"""

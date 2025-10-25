@@ -81,10 +81,10 @@ class Config:
     video_mode: str = "Components Inside"
     video_min_comp_area: int = 0
     video_show_green_frame: bool = True
-    video_frame_step: int = 3
+    video_frame_step: int = 10            # Lấy mỗi 10 frame để có ~180 ảnh từ video 1 phút
     video_max_frames: int = 0
     video_keep_only_detected: bool = True
-    video_lock_enable: bool = True
+    video_lock_enable: bool = False
     video_lock_n_warmup: int = 50
     video_lock_trim: float = 0.1
     video_lock_pad: int = 0
@@ -144,6 +144,7 @@ class Config:
     feather_px: int = 5
     
     # Training parameters
+    yolo_base: str = "yolov8n.pt"  # use 'yolo8vn' alias if present in your env
     yolo_epochs: int = 100
     yolo_batch: int = 16
     yolo_imgsz: int = 640
@@ -155,6 +156,7 @@ class Config:
     yolo_hsv: bool = True
     yolo_workers: int = 8
     
+    u2_variant: str = "u2netp"
     u2_epochs: int = 100
     u2_batch: int = 8
     u2_imgsz: int = 320
@@ -166,13 +168,17 @@ class Config:
     u2_weight_decay: float = 0.0001
     u2_use_edge_loss: bool = True
     u2_edge_loss_weight: float = 0.5
+    u2_best_name: str = "u2net_best.pth"
+    u2_last_name: str = "u2net_last.pth"
+    u2_inference_threshold: float = 0.5
+    u2_use_v2_pipeline: bool = True
     
     # Deskew parameters
     enable_deskew: bool = False
     deskew_method: str = "minAreaRect"
     
     # Device configuration
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = "cuda:0"  # Force GPU usage
     gpu_memory_fraction: float = 0.8
     
     # Training directories
@@ -198,9 +204,9 @@ class Config:
     train_split: float = 0.7  # 70% train, 30% validation
     
     # Video Processing Config
-    video_frame_step: int = 3             # Lấy mỗi n frame (1-20)
+    video_frame_step: int = 10            # Lấy mỗi 10 frame để có ~180 ảnh từ video 1 phút
     video_max_frames: int = 0             # Giới hạn số ảnh (0=all, 0-500)
-    frames_per_video: int = 390           # Tăng 30% từ 300 lên 390
+    frames_per_video: int = 92            # Giới hạn 92 ảnh/video (tăng 20%)
     min_frame_step: int = 2               # Minimum frame step
     video_keep_only_detected: bool = True # Chỉ giữ frame có mask (detected)
     video_backend: str = "DexiNed"        # DexiNed hoặc Canny
@@ -226,7 +232,7 @@ class Config:
     video_mode: str = "Components Inside" # Mask Only/Components Inside
     video_min_comp_area: int = 0          # Diện tích component tối thiểu (0-10000)
     video_show_green_frame: bool = True   # Hiển thị khung xanh
-    video_lock_enable: bool = True        # Bật/tắt size-lock
+    video_lock_enable: bool = False        # Bật/tắt size-lock
     video_lock_n_warmup: int = 50         # Số frame warmup (10-200)
     video_lock_trim: float = 0.1          # Tỷ lệ trim outlier (0.0-0.3)
     video_lock_pad: int = 0               # Padding cho locked size (0-20)

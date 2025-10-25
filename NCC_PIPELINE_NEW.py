@@ -2042,7 +2042,7 @@ def save_box_metadata(cfg: Config, box_name: str, metadata: Dict[str, Any]) -> s
             "created_at": created_at,
         }
         try:
-            with open(meta_file, 'w', encoding='utf-8') as f:
+    with open(meta_file, 'w', encoding='utf-8') as f:
                 json.dump(skeleton, f, ensure_ascii=False, indent=2)
             _log_success("Box Metadata", f"Created editable skeleton: {meta_file}")
         except Exception as e:

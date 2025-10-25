@@ -38,9 +38,9 @@ def main():
         for section in sections:
             try:
                 __import__(section)
-                print(f"✓ {section}")
+                print(f"[OK] {section}")
             except Exception as e:
-                print(f"✗ {section}: {e}")
+                print(f"[ERROR] {section}: {e}")
         
         # Import and build UI
         print("\nBuilding UI...")
@@ -60,15 +60,15 @@ def main():
         
         # Launch
         url = f"http://127.0.0.1:{port}"
-        print(f"\n🚀 Launching UI at: {url}")
+        print(f"\n[LAUNCH] Starting UI at: {url}")
         print("Opening browser...")
         
         # Auto open browser
         webbrowser.open(url)
         
         print("\n" + "=" * 50)
-        print("✅ Pipeline is running!")
-        print(f"🌐 Open: {url}")
+        print("[SUCCESS] Pipeline is running!")
+        print(f"[URL] Open: {url}")
         print("Press Ctrl+C to stop")
         print("=" * 50)
         
@@ -82,9 +82,9 @@ def main():
         )
         
     except KeyboardInterrupt:
-        print("\n\n👋 Pipeline stopped by user")
+        print("\n\n[STOP] Pipeline stopped by user")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] {e}")
         input("\nPress Enter to exit...")
 
 if __name__ == "__main__":
