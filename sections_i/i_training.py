@@ -71,7 +71,7 @@ def train_sdy_btn(epochs=100, batch=16, imgsz=640, lr0=0.01, lrf=0.1, weight_dec
     # Import pipe dynamically to get current value
     from sections_i.i_model_init import pipe
     if pipe is None:
-        return "[ERROR] Models not initialized", None
+        return "[ERROR] Models not initialized", None, None
     try:
         # Update config with training parameters
         CFG.yolo_epochs = int(epochs)
@@ -103,13 +103,13 @@ def train_sdy_btn(epochs=100, batch=16, imgsz=640, lr0=0.01, lrf=0.1, weight_dec
     except Exception as e:
         return f"[ERROR] {e}\n{traceback.format_exc()}", None, None
 
-def train_u2net_btn(epochs=100, batch=8, imgsz=320, lr=0.001, optimizer="AdamW", loss="BCEDice", workers=4,
+def train_u2net_btn(epochs=100, batch=8, imgsz=320, lr=0.001, optimizer="AdamW", loss="BCEDice", workers=4, variant="u2net",
                     amp=True, weight_decay=0.0001, use_edge_loss=True, edge_loss_weight=0.5):
     """Train U²-Net with custom hyperparameters and ONNX export"""
     # Import pipe dynamically to get current value
     from sections_i.i_model_init import pipe
     if pipe is None:
-        return "[ERROR] Models not initialized", None, None
+        return "[ERROR] Models not initialized", None, None, None
     
     try:
         # Update config with training parameters
@@ -120,6 +120,7 @@ def train_u2net_btn(epochs=100, batch=8, imgsz=320, lr=0.001, optimizer="AdamW",
         CFG.u2_optimizer = str(optimizer)
         CFG.u2_loss = str(loss)
         CFG.u2_workers = int(workers)
+        CFG.u2_variant = str(variant)
         CFG.u2_amp = bool(amp)
         CFG.u2_weight_decay = float(weight_decay)
         CFG.u2_use_edge_loss = bool(use_edge_loss)
@@ -149,7 +150,7 @@ def update_yolo_config_only(epochs, batch, imgsz, lr0, lrf, weight_decay, mosaic
     except Exception as e:
         return f"[ERROR] Failed to update YOLO config: {e}"
 
-def update_u2net_config_only(epochs, batch, imgsz, lr, optimizer, loss, workers, amp, weight_decay, use_edge_loss, edge_loss_weight):
+def update_u2net_config_only(epochs, batch, imgsz, lr, optimizer, loss, workers, variant, amp, weight_decay, use_edge_loss, edge_loss_weight):
     """Update U²-Net config only without training"""
     try:
         CFG.u2_epochs = int(epochs)
@@ -159,6 +160,7 @@ def update_u2net_config_only(epochs, batch, imgsz, lr, optimizer, loss, workers,
         CFG.u2_optimizer = str(optimizer)
         CFG.u2_loss = str(loss)
         CFG.u2_workers = int(workers)
+        CFG.u2_variant = str(variant)
         CFG.u2_amp = bool(amp)
         CFG.u2_weight_decay = float(weight_decay)
         CFG.u2_use_edge_loss = bool(use_edge_loss)

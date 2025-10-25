@@ -168,7 +168,7 @@ def build_ui():
                 training_components = create_training_components()
                 (yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
                  yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_update_config_btn, yolo_train_btn, sdy_status, sdy_weights, sdy_folder,
-                 u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
+                 u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
                  u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight,
                  u2_update_config_btn, u2_train_btn, u2_status, u2_weights, u2_folder, u2_onnx) = training_components
                 
@@ -187,7 +187,7 @@ def build_ui():
                 # U²-Net Update Config Button
                 u2_update_config_btn.click(
                     fn=update_u2net_config_only,
-                    inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
+                    inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
                            u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight],
                     outputs=[u2_status]
                 )
@@ -201,7 +201,7 @@ def build_ui():
                 
                 u2_train_btn.click(
                     fn=train_u2_fn,
-                    inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
+                    inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
                            u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight],
                     outputs=[u2_status, u2_weights, u2_folder, u2_onnx]
                 )
@@ -251,10 +251,21 @@ def build_ui():
                     yolo_path = None
                     u2net_path = None
                     
-                    # Try to find uploaded models
-                    models_dir = os.path.join(CFG.project_dir, "warehouse_models")
-                    yolo_path = os.path.join(models_dir, "yolo_model.pt")
-                    u2net_path = os.path.join(models_dir, "u2net_model.pth")
+                    # Try to find latest trained models
+                    # Look for latest YOLO model in runs_sdy
+                    runs_dir = os.path.join(CFG.project_dir, "runs_sdy")
+                    yolo_path = None
+                    if os.path.exists(runs_dir):
+                        for run_folder in sorted(os.listdir(runs_dir), reverse=True):
+                            if run_folder.startswith("train_"):
+                                weights_dir = os.path.join(runs_dir, run_folder, "weights")
+                                best_pt = os.path.join(weights_dir, "best.pt")
+                                if os.path.exists(best_pt):
+                                    yolo_path = best_pt
+                                    break
+                    
+                    # Look for latest U2Net model
+                    u2net_path = os.path.join(CFG.project_dir, "u2_runs", "u2net_best.pth")
                     
                     if not os.path.exists(yolo_path) or not os.path.exists(u2net_path):
                         return None, "[ERROR] Please upload both YOLO and U²-Net models first"

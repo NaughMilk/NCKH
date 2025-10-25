@@ -134,7 +134,9 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
 
             # Use consistent AMP context with proper fallback
             with amp_ctx(enabled=amp_enabled):
-                logits = net(img_t)
+                outputs = net(img_t)
+                # U2Net returns (d0, d1, d2, d3, d4, d5, d6) - use main output d0
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
                 main_loss = loss_fn(logits, mask_t)
 
                 # Add edge loss if enabled
@@ -178,7 +180,9 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
                 img_t, mask_t = img_t.to(device, non_blocking=True), mask_t.to(device, non_blocking=True)
                 # Use consistent AMP context with proper fallback
                 with amp_ctx(enabled=amp_enabled):
-                    logits = net(img_t)
+                    outputs = net(img_t)
+                    # U2Net returns (d0, d1, d2, d3, d4, d5, d6) - use main output d0
+                    logits = outputs[0] if isinstance(outputs, tuple) else outputs
                     loss = loss_fn(logits, mask_t)
 
                 # Calculate metrics
@@ -634,7 +638,8 @@ def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loa
                     images = images.to(device)
                     masks = masks.to(device)
 
-                    logits = model(images)
+                    outputs = model(images)
+                    logits = outputs[0] if isinstance(outputs, tuple) else outputs
                     preds = torch.sigmoid(logits) > 0.5
 
                     all_preds.extend(preds.cpu().numpy().flatten())
@@ -666,7 +671,8 @@ def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loa
                     images = images.to(device)
                     masks = masks.to(device)
 
-                    logits = model(images)
+                    outputs = model(images)
+                    logits = outputs[0] if isinstance(outputs, tuple) else outputs
                     preds = torch.sigmoid(logits) > 0.5
 
                     pred_flat = preds.cpu().numpy().flatten()
@@ -713,7 +719,8 @@ def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loa
                 images = images.to(device)
                 masks = masks.to(device)
 
-                logits = model(images)
+                outputs = model(images)
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
                 preds = torch.sigmoid(logits)
 
                 # Plot first batch
@@ -745,6 +752,12 @@ def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loa
                 break  # Only plot first batch
 
         _log_success("U²-Net Metrics", "Batch samples plotted")
+
+        # Generate validation batch overlay
+        _generate_val_batch_overlay(model, val_loader, device, metrics_dir)
+        
+        # Generate training batch overlay  
+        _generate_train_batch_overlay(model, train_loader, device, metrics_dir)
 
     except Exception as e:
         _log_error("U²-Net Metrics", f"Failed to plot batch samples: {e}")
@@ -813,3 +826,155 @@ def _export_u2net_onnx(net, best_path: str, run_dir: str) -> str:
     except Exception as e:
         _log_error("U²-Net Export", f"Failed to export ONNX: {e}")
         return None
+
+
+def _generate_val_batch_overlay(model, val_loader, device, metrics_dir):
+    """Generate validation batch overlay visualization"""
+    from sections_a.a_config import _log_info, _log_success, _log_error
+    
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        model.eval()
+        with torch.no_grad():
+            for images, masks, names in val_loader:
+                images = images.to(device)
+                masks = masks.to(device)
+                
+                outputs = model(images)
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                preds = torch.sigmoid(logits)
+                
+                # Create overlay visualization
+                fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+                
+                for i in range(min(4, images.size(0))):
+                    # Original image
+                    img = images[i].cpu().permute(1, 2, 0).numpy()
+                    img = (img * 255).astype(np.uint8)
+                    
+                    # Ground truth mask
+                    gt_mask = masks[i].cpu().squeeze().numpy()
+                    
+                    # Predicted mask
+                    pred_mask = preds[i].cpu().squeeze().numpy()
+                    
+                    # Create overlay: original + GT mask (green) + pred mask (red)
+                    overlay_gt = img.copy()
+                    overlay_gt[gt_mask > 0.5] = [0, 255, 0]  # Green for GT
+                    
+                    overlay_pred = img.copy()
+                    overlay_pred[pred_mask > 0.5] = [255, 0, 0]  # Red for prediction
+                    
+                    # Combined overlay
+                    overlay_combined = img.copy()
+                    overlay_combined[gt_mask > 0.5] = [0, 255, 0]  # Green for GT
+                    overlay_combined[pred_mask > 0.5] = [255, 0, 0]  # Red for prediction
+                    
+                    # Plot original
+                    axes[0, i].imshow(img)
+                    axes[0, i].set_title(f'Original {i}')
+                    axes[0, i].axis('off')
+                    
+                    # Plot GT overlay
+                    axes[1, i].imshow(overlay_gt)
+                    axes[1, i].set_title(f'GT Overlay {i}')
+                    axes[1, i].axis('off')
+                    
+                    # Plot pred overlay
+                    axes[1, i].imshow(overlay_pred)
+                    axes[1, i].set_title(f'Pred Overlay {i}')
+                    axes[1, i].axis('off')
+                    
+                    # Plot combined overlay
+                    axes[1, i].imshow(overlay_combined)
+                    axes[1, i].set_title(f'Combined Overlay {i}')
+                    axes[1, i].axis('off')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(metrics_dir, "val_batch_overlay.png"), dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                break  # Only plot first batch
+                
+        _log_success("U²-Net Metrics", "Validation batch overlay plotted")
+        
+    except Exception as e:
+        _log_error("U²-Net Metrics", f"Failed to generate validation batch overlay: {e}")
+
+
+def _generate_train_batch_overlay(model, train_loader, device, metrics_dir):
+    """Generate training batch overlay visualization"""
+    from sections_a.a_config import _log_info, _log_success, _log_error
+    
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        model.eval()
+        with torch.no_grad():
+            for images, masks, names in train_loader:
+                images = images.to(device)
+                masks = masks.to(device)
+                
+                outputs = model(images)
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                preds = torch.sigmoid(logits)
+                
+                # Create overlay visualization
+                fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+                
+                for i in range(min(4, images.size(0))):
+                    # Original image
+                    img = images[i].cpu().permute(1, 2, 0).numpy()
+                    img = (img * 255).astype(np.uint8)
+                    
+                    # Ground truth mask
+                    gt_mask = masks[i].cpu().squeeze().numpy()
+                    
+                    # Predicted mask
+                    pred_mask = preds[i].cpu().squeeze().numpy()
+                    
+                    # Create overlay: original + GT mask (green) + pred mask (red)
+                    overlay_gt = img.copy()
+                    overlay_gt[gt_mask > 0.5] = [0, 255, 0]  # Green for GT
+                    
+                    overlay_pred = img.copy()
+                    overlay_pred[pred_mask > 0.5] = [255, 0, 0]  # Red for prediction
+                    
+                    # Combined overlay
+                    overlay_combined = img.copy()
+                    overlay_combined[gt_mask > 0.5] = [0, 255, 0]  # Green for GT
+                    overlay_combined[pred_mask > 0.5] = [255, 0, 0]  # Red for prediction
+                    
+                    # Plot original
+                    axes[0, i].imshow(img)
+                    axes[0, i].set_title(f'Original {i}')
+                    axes[0, i].axis('off')
+                    
+                    # Plot GT overlay
+                    axes[1, i].imshow(overlay_gt)
+                    axes[1, i].set_title(f'GT Overlay {i}')
+                    axes[1, i].axis('off')
+                    
+                    # Plot pred overlay
+                    axes[1, i].imshow(overlay_pred)
+                    axes[1, i].set_title(f'Pred Overlay {i}')
+                    axes[1, i].axis('off')
+                    
+                    # Plot combined overlay
+                    axes[1, i].imshow(overlay_combined)
+                    axes[1, i].set_title(f'Combined Overlay {i}')
+                    axes[1, i].axis('off')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(metrics_dir, "train_batch_overlay.png"), dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                break  # Only plot first batch
+                
+        _log_success("U²-Net Metrics", "Training batch overlay plotted")
+        
+    except Exception as e:
+        _log_error("U²-Net Metrics", f"Failed to generate training batch overlay: {e}")

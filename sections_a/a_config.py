@@ -25,7 +25,7 @@ def _log_success(context: str, message: str):
 
 @dataclass
 class Config:
-    project_dir: str = "sdy_project"
+    project_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sdy_project")
     dataset_name: str = "dataset_sdy_box"
     rejected_images_dir: str = "rejected_images"
     gdino_repo_candidates: List[str] = field(default_factory=lambda: [
@@ -156,17 +156,17 @@ class Config:
     yolo_hsv: bool = True
     yolo_workers: int = 8
     
-    u2_variant: str = "u2netp"
+    u2_variant: str = "u2net"
     u2_epochs: int = 100
-    u2_batch: int = 8
+    u2_batch: int = 2
     u2_imgsz: int = 320
-    u2_lr: float = 0.001
+    u2_lr: float = 0.00001
     u2_optimizer: str = "AdamW"
     u2_loss: str = "BCEDice"
     u2_workers: int = 4
-    u2_amp: bool = True
+    u2_amp: bool = False
     u2_weight_decay: float = 0.0001
-    u2_use_edge_loss: bool = True
+    u2_use_edge_loss: bool = False
     u2_edge_loss_weight: float = 0.5
     u2_best_name: str = "u2net_best.pth"
     u2_last_name: str = "u2net_last.pth"

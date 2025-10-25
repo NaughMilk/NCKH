@@ -35,7 +35,7 @@ class QR:
         return None, None
 
 
-def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2net_model_path: str = None, enable_deskew: bool = False, enable_force_rectangle: bool = True) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
+def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2net_model_path: str = None, enable_deskew: bool = False, enable_force_rectangle: bool = False) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
     """
     Pipeline kiểm tra kho - CHỈ DÙNG YOLO MODEL ĐÃ TRAIN:
     1. Đọc QR
@@ -157,8 +157,8 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
                     conf = float(box.conf[0])
                     cls_id = int(box.cls[0])
                     
-                    # Get class name
-                    class_name = "plastic box" if cls_id == 0 else "fruit"
+                    # Get class name from model
+                    class_name = warehouse_yolo_model.names[cls_id]
                     
                     # Draw bounding box - FIXED: Use proper BGR colors
                     color = (0, 255, 0) if cls_id == 0 else (0, 0, 255)  # Green for box, Red for fruit
@@ -230,15 +230,15 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
             seg_start = time.time()
             x1, y1, x2, y2 = box_bbox
             
-            # Crop ROI for processing
-            roi_bgr = frame_bgr[y1:y2, x1:x2]
-            roi_rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+            # Use U²-Net for segmentation on full image
+            _log_info("Warehouse Check", "Using U²-Net for segmentation on full image")
             
-            # Use U²-Net for segmentation
-            _log_info("Warehouse Check", "Using U²-Net for segmentation")
-            # Run U²-Net inference on ROI
-            H_roi, W_roi = roi_rgb.shape[:2]
-            img_tensor = torch.from_numpy(roi_rgb).permute(2, 0, 1).float() / 255.0
+            # Convert full image to RGB
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            H_full, W_full = frame_rgb.shape[:2]
+            
+            # Run U²-Net inference on full image
+            img_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
             img_resized = F.interpolate(
                 img_tensor.unsqueeze(0),
                 size=(CFG.u2_imgsz, CFG.u2_imgsz),
@@ -248,21 +248,34 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
             
             with torch.no_grad():
                 img_resized = img_resized.to(CFG.device)
-                logits = warehouse_u2net_model(img_resized)
+                outputs = warehouse_u2net_model(img_resized)
+                # U2Net returns (d0, d1, d2, d3, d4, d5, d6) - use main output d0
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
                 probs = torch.sigmoid(logits)
                 probs_resized = F.interpolate(
                     probs,
-                    size=(H_roi, W_roi),
+                    size=(H_full, W_full),
                     mode='bilinear',
                     align_corners=False
                 )
-                roi_mask = (probs_resized.squeeze().cpu().numpy() > CFG.u2_inference_threshold).astype(np.uint8) * 255
+                full_mask = (probs_resized.squeeze().cpu().numpy() > CFG.u2_inference_threshold).astype(np.uint8) * 255
+                
+                # Log mask stats before processing
+                mask_pixels_before = np.sum(full_mask > 0)
+                _log_info("Mask Debug", f"U2Net raw mask: {mask_pixels_before} pixels ({mask_pixels_before/(full_mask.shape[0]*full_mask.shape[1])*100:.1f}% of full image)")
                 
                 # Enhanced mask processing pipeline
                 if CFG.u2_use_v2_pipeline:
-                    roi_mask = _process_enhanced_mask_v2(roi_mask, CFG)
+                    full_mask = _process_enhanced_mask_v2(full_mask, CFG)
                 else:
-                    roi_mask = _process_enhanced_mask(roi_mask, CFG)
+                    full_mask = _process_enhanced_mask(full_mask, CFG)
+                
+                # Log mask stats after processing
+                mask_pixels_after = np.sum(full_mask > 0)
+                _log_info("Mask Debug", f"After processing: {mask_pixels_after} pixels ({mask_pixels_after/(full_mask.shape[0]*full_mask.shape[1])*100:.1f}% of full image)")
+                
+                # Extract ROI mask from full mask
+                roi_mask = full_mask[y1:y2, x1:x2]
             
             seg_time = time.time() - seg_start
             _log_info("Warehouse Timing", f"Segmentation: {seg_time*1000:.1f}ms")
@@ -295,9 +308,7 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
                 _log_info("Warehouse Check", "Force rectangle disabled - using original mask")
             
             # Create full-size mask for visualization
-            # U²-Net: tạo full mask từ ROI với rectangle
-            full_mask = np.zeros((frame_bgr.shape[0], frame_bgr.shape[1]), dtype=np.uint8)
-            full_mask[y1:y2, x1:x2] = roi_mask
+            # U²-Net: sử dụng full mask đã có
             results["u2net_mask"] = full_mask
             results["deskew_info"] = deskew_info
             results["rectangle_info"] = rectangle_info

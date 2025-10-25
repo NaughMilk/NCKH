@@ -191,17 +191,19 @@ def create_training_components():
         gr.Markdown("### U2-Net Training")
         with gr.Row():
             u2_epochs = gr.Number(100, label="Epochs")
-            u2_batch = gr.Number(8, label="Batch Size")
+            u2_batch = gr.Number(2, label="Batch Size")
             u2_imgsz = gr.Number(320, label="Image Size")
         with gr.Row():
-            u2_lr = gr.Number(0.001, label="Learning Rate")
+            u2_lr = gr.Number(0.00001, label="Learning Rate")
             u2_optimizer = gr.Dropdown(["Adam", "AdamW", "SGD"], value="AdamW", label="Optimizer")
             u2_loss = gr.Dropdown(["BCEDice", "BCE", "Dice"], value="BCEDice", label="Loss")
             u2_workers = gr.Number(4, label="Workers")
         with gr.Row():
-            u2_amp = gr.Checkbox(True, label="AMP")
+            u2_variant = gr.Dropdown(["u2net", "u2netp", "u2net_lite"], value="u2net", label="U2Net Variant")
+        with gr.Row():
+            u2_amp = gr.Checkbox(False, label="AMP")
             u2_weight_decay = gr.Number(0.0001, label="Weight Decay")
-            u2_use_edge_loss = gr.Checkbox(True, label="Edge Loss")
+            u2_use_edge_loss = gr.Checkbox(False, label="Edge Loss")
             u2_edge_loss_weight = gr.Number(0.5, label="Edge Loss Weight")
         
         with gr.Row():
@@ -214,7 +216,7 @@ def create_training_components():
     
     return (yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
             yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_update_config_btn, yolo_train_btn, sdy_status, sdy_weights, sdy_folder,
-            u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers,
+            u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
             u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight,
             u2_update_config_btn, u2_train_btn, u2_status, u2_weights, u2_folder, u2_onnx)
 

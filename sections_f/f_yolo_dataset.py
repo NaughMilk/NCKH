@@ -64,6 +64,7 @@ class DSYDataset:
         self.detected_classes = set([cls for cls in self.class_names if cls != "plastic box"])
         
         _log_info("DSYDataset", f"Loaded {len(self.class_names)} classes: {self.class_names}")
+        _log_info("YAML Debug", f"DSYDataset.__init__ loaded {len(self.class_names)} classes: {self.class_names}")
         
         # CRITICAL: Create data.yaml files after class_names is set
         self._create_initial_yaml_files()
@@ -87,6 +88,7 @@ class DSYDataset:
                     class_names = registry.get("class_names", ["plastic box"])
                     class_id_counter = len(class_names)
                     _log_info("Class Registry", f"Loaded from {self.class_registry_path}: {class_names}")
+                    _log_info("YAML Debug", f"_load_class_registry returning {len(class_names)} classes: {class_names}")
                     return class_names, class_id_counter
             except Exception as e:
                 _log_warning("Class Registry", f"Failed to load registry: {e}")
@@ -119,6 +121,7 @@ class DSYDataset:
         
         # Reload class registry to ensure we have latest classes
         self.class_names, self.class_id_counter = self._load_class_registry()
+        _log_info("YAML Debug", f"_get_or_add_class_id reloaded {len(self.class_names)} classes: {self.class_names}")
         
         # Check if class already exists
         if normalized_name in self.class_names:
@@ -173,6 +176,7 @@ class DSYDataset:
         self._create_initial_yaml_files()
         
         _log_success("Dataset Aggregation", "Completed aggregation of all sections")
+        _log_info("YAML Debug", f"aggregate_all_sections completed with {len(self.class_names)} classes: {self.class_names}")
     
     def _aggregate_yolo_sections(self, sessions):
         """Aggregate YOLO data from all sessions"""
@@ -303,6 +307,7 @@ class DSYDataset:
             
             if 'names' in data:
                 class_names = data['names']
+                _log_info("YAML Debug", f"_load_existing_yaml loaded {len(class_names)} classes from {yaml_path}: {class_names}")
                 return class_names, len(class_names)
             return [], 0
         except Exception as e:
@@ -342,9 +347,13 @@ class DSYDataset:
             'names': self.class_names
         }
         
+        # DEBUG: Log class names before writing YAML in _create_initial_yaml_files
+        _log_info("YAML Debug", f"_create_initial_yaml_files writing YAML with {len(self.class_names)} classes: {self.class_names}")
+        
         with open(yolo_yaml_path, 'w') as f:
             import yaml
             yaml.dump(yolo_yaml, f, default_flow_style=False)
+            _log_info("YAML Debug", f"_create_initial_yaml_files wrote YAML to {yolo_yaml_path} with {len(self.class_names)} classes: {self.class_names}")
         
         # U²-Net manifest (not YAML) - giống NCC_PIPELINE_NEW.py
         u2net_manifest_path = os.path.join(self.u2net_root, "manifest.json")
@@ -539,6 +548,9 @@ class DSYDataset:
         # DYNAMIC: Use dynamic class names from actual detections
         class_names = self.class_names  # Use dynamic classes
         
+        # DEBUG: Log class names before writing YAML
+        _log_info("YAML Debug", f"About to write YAML with {len(class_names)} classes: {class_names}")
+        
         # PROTECTION: Check if 2-class YAML already exists and don't overwrite
         yolo_yaml_path = os.path.join(self.yolo_root, "data.yaml")
         should_write_yaml = True
@@ -576,20 +588,22 @@ class DSYDataset:
 train: images/train
 val: images/val
 
-nc: 2
+nc: {len(class_names)}
 names: {class_names}
 """
             atomic_write_text(path, yaml_content)
+            _log_info("YAML Debug", f"Wrote main YAML to {path} with {len(class_names)} classes: {class_names}")
             
             # Write YOLO-specific YAML
             yolo_yaml_content = f"""path: {os.path.abspath(self.yolo_root)}
 train: images/train
 val: images/val
 
-nc: 2
+nc: {len(class_names)}
 names: {class_names}
 """
             atomic_write_text(yolo_yaml_path, yolo_yaml_content)
+            _log_info("YAML Debug", f"Wrote YOLO YAML to {yolo_yaml_path} with {len(class_names)} classes: {class_names}")
             
             # Copy data from main dataset to session dataset if session dataset is empty
             self._copy_main_dataset_to_session()

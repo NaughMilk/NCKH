@@ -64,7 +64,7 @@ def handle_qr_generation(box_id, fruit1_name, fruit1_count, fruit2_name, fruit2_
         return None, f"[ERROR] QR generation failed: {e}", None, None
 
 def handle_warehouse_upload(uploaded_image, yolo_model_path: str, u2net_model_path: str, 
-                          enable_deskew: bool = False, deskew_method: str = "minAreaRect", enable_force_rectangle: bool = True) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
+                          enable_deskew: bool = False, deskew_method: str = "minAreaRect", enable_force_rectangle: bool = False) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
     """
     Handle warehouse check with uploaded image and model paths
     

@@ -1,6 +1,6 @@
-path: D:\NCKH CODE\PIPELINE ORIGINAL\PIPELINE ORIGINAL\sdy_project\dataset_sdy_box
+path: d:\NCKH CODE\PIPELINE ORIGINAL\PIPELINE ORIGINAL\sdy_project\dataset_sdy_box
 train: images/train
 val: images/val
 
-nc: 2
-names: ['plastic box', 'tangerine', 'crisp persimmon']
+nc: 5
+names: ['plastic box', 'tangerine', 'crisp persimmon', 'apple', 'pear']

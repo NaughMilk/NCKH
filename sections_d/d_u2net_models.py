@@ -104,6 +104,15 @@ class U2NET(nn.Module):
         d4 = self.side4(h4d)
         d5 = self.side5(h5d)
         d6 = self.side6(h6)
+        
+        # Resize all side outputs to the same size (d1 size)
+        target_size = d1.size()[2:]
+        d2 = F.interpolate(d2, size=target_size, mode='bilinear', align_corners=False)
+        d3 = F.interpolate(d3, size=target_size, mode='bilinear', align_corners=False)
+        d4 = F.interpolate(d4, size=target_size, mode='bilinear', align_corners=False)
+        d5 = F.interpolate(d5, size=target_size, mode='bilinear', align_corners=False)
+        d6 = F.interpolate(d6, size=target_size, mode='bilinear', align_corners=False)
+        
         d0 = self.outconv(torch.cat([d1, d2, d3, d4, d5, d6], 1))
         return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
 
