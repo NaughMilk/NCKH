@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from .d_basic_blocks import REBNCONV, RSU4, RSU4F, RSU5, RSU6, RSU7
 
 class U2NETP(nn.Module):
-    """U²-Net-P lightweight - FIXED to match NCC_PIPELINE_NEW.py"""
+    """U²-Net-P lightweight - EXACT COPY from NCC_PIPELINE_NEW.py"""
     def __init__(self, in_ch=3, out_ch=1):
         super().__init__()
         self.stage1 = RSU4(in_ch, 16, 64)
@@ -13,8 +13,7 @@ class U2NETP(nn.Module):
         self.pool23 = nn.MaxPool2d(2, stride=2, ceil_mode=True)
         self.stage3 = RSU4(64, 16, 64)
         self.pool34 = nn.MaxPool2d(2, stride=2, ceil_mode=True)
-        self.stage4 = RSU4(64, 16, 64)
-        # decoder
+        self.stage4 = RSU4F(64, 16, 64)  # FIXED: Use RSU4F not RSU4
         self.stage3d = RSU4(128, 16, 64)
         self.stage2d = RSU4(128, 16, 64)
         self.stage1d = RSU4(128, 16, 64)
@@ -38,7 +37,6 @@ class U2NETP(nn.Module):
         h2d = self.stage2d(torch.cat([h3dup, h2], 1))
         h2dup = F.interpolate(h2d, size=h1.size()[2:], mode='bilinear', align_corners=False)
         h1d = self.stage1d(torch.cat([h2dup, h1], 1))
-        # side output
         d1 = self.side1(h1d)
         d2 = F.interpolate(self.side2(h2d), size=x.size()[2:], mode='bilinear', align_corners=False)
         d3 = F.interpolate(self.side3(h3d), size=x.size()[2:], mode='bilinear', align_corners=False)
@@ -46,9 +44,10 @@ class U2NETP(nn.Module):
         return d0
 
 class U2NET(nn.Module):
-    """U²-Net Full architecture with deep supervision"""
+    """U²-Net Full architecture with deep supervision - EXACT COPY from NCC_PIPELINE_NEW.py"""
     def __init__(self, in_ch=3, out_ch=1):
         super().__init__()
+        # Encoder
         self.stage1 = RSU7(in_ch, 32, 64)
         self.pool12 = nn.MaxPool2d(2, stride=2, ceil_mode=True)
         self.stage2 = RSU6(64, 32, 128)
@@ -60,12 +59,13 @@ class U2NET(nn.Module):
         self.stage5 = RSU4F(512, 256, 512)
         self.pool56 = nn.MaxPool2d(2, stride=2, ceil_mode=True)
         self.stage6 = RSU4F(512, 256, 512)
-        # decoder
+        # Decoder
         self.stage5d = RSU4F(1024, 256, 512)
         self.stage4d = RSU4(1024, 128, 256)
         self.stage3d = RSU5(512, 64, 128)
         self.stage2d = RSU6(256, 32, 64)
         self.stage1d = RSU7(128, 16, 64)
+        # Side outputs
         self.side1 = nn.Conv2d(64, out_ch, 3, padding=1)
         self.side2 = nn.Conv2d(64, out_ch, 3, padding=1)
         self.side3 = nn.Conv2d(128, out_ch, 3, padding=1)
@@ -97,27 +97,17 @@ class U2NET(nn.Module):
         h2d = self.stage2d(torch.cat([h3dup, h2], 1))
         h2dup = F.interpolate(h2d, size=h1.size()[2:], mode='bilinear', align_corners=False)
         h1d = self.stage1d(torch.cat([h2dup, h1], 1))
-        # side output
         d1 = self.side1(h1d)
-        d2 = self.side2(h2d)
-        d3 = self.side3(h3d)
-        d4 = self.side4(h4d)
-        d5 = self.side5(h5d)
-        d6 = self.side6(h6)
-        
-        # Resize all side outputs to the same size (d1 size)
-        target_size = d1.size()[2:]
-        d2 = F.interpolate(d2, size=target_size, mode='bilinear', align_corners=False)
-        d3 = F.interpolate(d3, size=target_size, mode='bilinear', align_corners=False)
-        d4 = F.interpolate(d4, size=target_size, mode='bilinear', align_corners=False)
-        d5 = F.interpolate(d5, size=target_size, mode='bilinear', align_corners=False)
-        d6 = F.interpolate(d6, size=target_size, mode='bilinear', align_corners=False)
-        
+        d2 = F.interpolate(self.side2(h2d), size=x.size()[2:], mode='bilinear', align_corners=False)
+        d3 = F.interpolate(self.side3(h3d), size=x.size()[2:], mode='bilinear', align_corners=False)
+        d4 = F.interpolate(self.side4(h4d), size=x.size()[2:], mode='bilinear', align_corners=False)
+        d5 = F.interpolate(self.side5(h5d), size=x.size()[2:], mode='bilinear', align_corners=False)
+        d6 = F.interpolate(self.side6(h6), size=x.size()[2:], mode='bilinear', align_corners=False)
         d0 = self.outconv(torch.cat([d1, d2, d3, d4, d5, d6], 1))
-        return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
+        return d0
 
 class U2NET_LITE(nn.Module):
-    """U²-Net-Lite super lightweight version for mobile/embedded"""
+    """U²-Net-Lite super lightweight version for mobile/embedded - EXACT COPY from NCC_PIPELINE_NEW.py"""
     def __init__(self, in_ch=3, out_ch=1):
         super().__init__()
         self.stage1 = RSU4(in_ch, 8, 32)

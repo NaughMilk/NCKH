@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 import json
 import glob
+from sections_h.h_mask_processing import _ensure_mask_format
 from typing import List, Dict, Any, Optional, Tuple
 
 
@@ -87,7 +88,29 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
 
     _log_success("U²-Net Training", f"Model {variant} created and moved to {device}")
 
-    # Optimizer & Loss with enhanced options
+    # Calculate pos_weight for class imbalance
+    def calculate_pos_weight(val_loader):
+        """Calculate pos_weight = (1-p)/p where p is foreground ratio"""
+        total_pixels = 0
+        foreground_pixels = 0
+        
+        for img_t, mask_t, _ in val_loader:
+            mask_flat = mask_t.view(-1)
+            total_pixels += mask_flat.numel()
+            foreground_pixels += mask_flat.sum().item()
+        
+        if foreground_pixels > 0:
+            p = foreground_pixels / total_pixels
+            pos_weight = (1 - p) / p
+            _log_info("U²-Net Training", f"Calculated pos_weight: {pos_weight:.4f} (p={p:.4f})")
+            return torch.tensor(pos_weight, device=device)
+        else:
+            _log_warning("U²-Net Training", "No foreground pixels found, using pos_weight=1")
+            return torch.tensor(1.0, device=device)
+    
+    pos_weight = calculate_pos_weight(val_loader)
+
+    # Optimizer with OneCycleLR
     if CFG.u2_optimizer.lower() == "adamw":
         opt = torch.optim.AdamW(net.parameters(), lr=CFG.u2_lr, weight_decay=CFG.u2_weight_decay)
     elif CFG.u2_optimizer.lower() == "sgd":
@@ -95,13 +118,18 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
     else:
         opt = torch.optim.AdamW(net.parameters(), lr=CFG.u2_lr, weight_decay=CFG.u2_weight_decay)
 
-    # Loss function selection
+    # OneCycleLR scheduler
+    total_steps = len(train_loader) * CFG.u2_epochs
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        opt, max_lr=CFG.u2_lr, total_steps=total_steps,
+        pct_start=0.1, anneal_strategy='cos'
+    )
+
+    # Loss function - only BCEDice and EdgeLoss available
     if CFG.u2_loss.lower() == "bce":
-        loss_fn = nn.BCEWithLogitsLoss()
-    elif CFG.u2_loss.lower() == "dice":
-        loss_fn = BCEDiceLoss()  # BCEDiceLoss includes Dice
-    else:  # BCEDice
-        loss_fn = BCEDiceLoss()
+        loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    else:  # BCEDice (default)
+        loss_fn = BCEDiceLoss()  # No pos_weight parameter
 
     # Edge loss for better boundary quality
     edge_loss_fn = EdgeLoss() if CFG.u2_use_edge_loss else None
@@ -113,24 +141,213 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
     amp_enabled = (device.type == "cuda" and CFG.u2_amp)
     amp_ctx = torch.cuda.amp.autocast if device.type == "cuda" else nullcontext
 
-    # Training loop with metrics tracking
+    # Utility functions for metrics and post-processing
+    def calculate_metrics(pred_mask, target, threshold=0.5):
+        """Calculate IoU, Dice, and confusion matrix metrics"""
+        pred_binary = (pred_mask > threshold).float()
+        target_binary = target.float()
+        
+        # Flatten for pixel-wise calculation
+        pred_flat = pred_binary.view(-1)
+        target_flat = target_binary.view(-1)
+        
+        # Confusion matrix components
+        tp = (pred_flat * target_flat).sum()
+        tn = ((1 - pred_flat) * (1 - target_flat)).sum()
+        fp = (pred_flat * (1 - target_flat)).sum()
+        fn = ((1 - pred_flat) * target_flat).sum()
+        
+        # IoU
+        intersection = tp
+        union = tp + fp + fn
+        iou = intersection / (union + 1e-8)
+        
+        # Dice
+        dice = (2 * tp) / (tp + fp + tp + fn + 1e-8)
+        
+        return iou.item(), dice.item(), tp.item(), tn.item(), fp.item(), fn.item()
+    
+    def find_best_threshold(model, val_loader, device, thresholds=None):
+        """Find best threshold using validation set"""
+        if thresholds is None:
+            thresholds = np.arange(0.3, 0.8, 0.025)
+        
+        model.eval()
+        best_threshold = 0.5
+        best_dice = 0.0
+        
+        threshold_metrics = {}
+        
+        with torch.no_grad():
+            for threshold in thresholds:
+                total_dice = 0.0
+                total_iou = 0.0
+                num_samples = 0
+                
+                for img_t, mask_t, _ in val_loader:
+                    img_t, mask_t = img_t.to(device), mask_t.to(device)
+                    
+                    with amp_ctx(enabled=amp_enabled):
+                        outputs = model(img_t)
+                        logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                        probs = torch.sigmoid(logits)
+                    
+                    iou, dice, _, _, _, _ = calculate_metrics(probs, mask_t, threshold)
+                    total_dice += dice
+                    total_iou += iou
+                    num_samples += 1
+                
+                avg_dice = total_dice / num_samples
+                avg_iou = total_iou / num_samples
+                
+                threshold_metrics[threshold] = {'dice': avg_dice, 'iou': avg_iou}
+                
+                if avg_dice > best_dice:
+                    best_dice = avg_dice
+                    best_threshold = threshold
+        
+        _log_success("U²-Net Training", f"Best threshold: {best_threshold:.3f} (Dice: {best_dice:.4f})")
+        return best_threshold, threshold_metrics
+    
+    def postprocess_mask(mask, largest_component=True, morphology=True, convex_hull=False):
+        """Post-process mask for better quality"""
+        mask_np = mask.cpu().numpy().astype(np.uint8)
+        
+        if largest_component:
+            # Keep only largest connected component
+            try:
+                mask_np = _ensure_mask_format(mask_np)
+                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
+                if num_labels > 1:
+                    # Find largest component (excluding background)
+                    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+                    mask_np = (labels == largest_label).astype(np.uint8) * 255
+            except Exception as e:
+                print(f"[WARN] Postprocess Mask: Failed to process components: {e}")
+                # Keep original mask if processing fails
+        
+        if morphology:
+            # Morphological operations
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            mask_np = cv2.morphologyEx(mask_np, cv2.MORPH_CLOSE, kernel)
+            mask_np = cv2.morphologyEx(mask_np, cv2.MORPH_OPEN, kernel)
+        
+        if convex_hull:
+            # Convex hull approximation
+            contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                # Find largest contour
+                largest_contour = max(contours, key=cv2.contourArea)
+                hull = cv2.convexHull(largest_contour)
+                mask_np = np.zeros_like(mask_np)
+                cv2.fillPoly(mask_np, [hull], 255)
+        
+        return torch.from_numpy(mask_np / 255.0).float()
+    
+    def _save_overlay_images(model, val_loader, device, run_dir, epoch, threshold):
+        """Save overlay images for manual inspection"""
+        model.eval()
+        overlay_dir = os.path.join(run_dir, "overlays")
+        ensure_dir(overlay_dir)
+        
+        saved_count = 0
+        max_images = 12
+        
+        with torch.no_grad():
+            for batch_idx, (img_t, mask_t, names) in enumerate(val_loader):
+                if saved_count >= max_images:
+                    break
+                    
+                img_t, mask_t = img_t.to(device), mask_t.to(device)
+                
+                with amp_ctx(enabled=amp_enabled):
+                    outputs = model(img_t)
+                    logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                    probs = torch.sigmoid(logits)
+                
+                # Post-process masks
+                if True:  # Always postprocess
+                    probs_processed = postprocess_mask(probs.squeeze(), 
+                                                     largest_component=True, 
+                                                     morphology=True, 
+                                                     convex_hull=False)
+                else:
+                    probs_processed = probs.squeeze()
+                
+                # Create overlays
+                for i in range(min(img_t.size(0), max_images - saved_count)):
+                    # Convert to numpy
+                    img_np = img_t[i].cpu().permute(1, 2, 0).numpy()
+                    img_np = (img_np * 255).astype(np.uint8)
+                    
+                    mask_gt = mask_t[i].cpu().squeeze().numpy()
+                    mask_pred = (probs_processed[i].cpu().numpy() > threshold).astype(np.uint8)
+                    
+                    # Ensure masks are in correct format
+                    mask_gt = _ensure_mask_format(mask_gt)
+                    mask_pred = _ensure_mask_format(mask_pred)
+                    
+                    # Create overlay
+                    overlay = img_np.copy()
+                    overlay[mask_pred == 255] = [255, 0, 0]  # Red for prediction
+                    
+                    # Create comparison image
+                    comparison = np.hstack([
+                        img_np,
+                        cv2.cvtColor(mask_gt, cv2.COLOR_GRAY2RGB),
+                        cv2.cvtColor(mask_pred, cv2.COLOR_GRAY2RGB),
+                        overlay
+                    ])
+                    
+                    # Save image
+                    save_path = os.path.join(overlay_dir, f"epoch_{epoch:03d}_sample_{saved_count:02d}.jpg")
+                    cv2.imwrite(save_path, cv2.cvtColor(comparison, cv2.COLOR_RGB2BGR))
+                    saved_count += 1
+        
+        _log_info("U²-Net Training", f"Saved {saved_count} overlay images to {overlay_dir}")
+
+    # Training loop with gradient accumulation and improved metrics
     train_losses, val_losses = [], []
     train_ious, val_ious = [], []
     train_dices, val_dices = [], []
     epochs = []
+    
+    # Metrics tracking
+    metrics_summary = {
+        'best_threshold': CFG.u2_inference_threshold,
+        'pos_weight': pos_weight.item(),
+        'input_size': imgsz
+    }
 
     best_val = 1e9
+    best_threshold = CFG.u2_inference_threshold
+    
+    # Curriculum learning schedule
+    def get_curriculum_phase(epoch, total_epochs):
+        """Determine curriculum learning phase"""
+        return "normal"  # Always use normal training
+    
     for ep in range(1, CFG.u2_epochs + 1):
-        # Train
+        # Get curriculum learning phase
+        curriculum_phase = get_curriculum_phase(ep, CFG.u2_epochs)
+        
+        # Train with gradient accumulation
         net.train()
+        if CFG.u2_batch < 8:
+            # Freeze BatchNorm when batch size is small
+            for m in net.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.eval()
+        
         ep_loss = 0.0
         ep_iou = 0.0
         ep_dice = 0.0
+        ep_tp = ep_tn = ep_fp = ep_fn = 0.0
         train_samples = 0
+        accumulation_steps = 0
 
-        for img_t, mask_t, _ in train_loader:
+        for batch_idx, (img_t, mask_t, _) in enumerate(train_loader):
             img_t, mask_t = img_t.to(device, non_blocking=True), mask_t.to(device, non_blocking=True)
-            opt.zero_grad(set_to_none=True)
 
             # Use consistent AMP context with proper fallback
             with amp_ctx(enabled=amp_enabled):
@@ -146,34 +363,46 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
                 else:
                     loss = main_loss
 
+            # Gradient accumulation
+            loss = loss / 1  # No gradient accumulation
             scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
+            
+            accumulation_steps += 1
+            if accumulation_steps % 1 == 0:  # No gradient accumulation
+                scaler.step(opt)
+                scaler.update()
+                scheduler.step()
+                opt.zero_grad(set_to_none=True)
+                accumulation_steps = 0
 
-            # Calculate metrics
+            # Calculate metrics with consistent threshold
             with torch.no_grad():
                 probs = torch.sigmoid(logits)
-                pred_mask = (probs > 0.5).float()
+                iou, dice, tp, tn, fp, fn = calculate_metrics(probs, mask_t, best_threshold)
 
-                # IoU calculation
-                intersection = (pred_mask * mask_t).sum(dim=(2, 3))
-                union = pred_mask.sum(dim=(2, 3)) + mask_t.sum(dim=(2, 3)) - intersection
-                iou = (intersection / (union + 1e-8)).mean()
-
-                # Dice calculation
-                dice = (2 * intersection / (pred_mask.sum(dim=(2, 3)) + mask_t.sum(dim=(2, 3)) + 1e-8)).mean()
-
-                ep_loss += loss.item() * img_t.size(0)
-                ep_iou += iou.item() * img_t.size(0)
-                ep_dice += dice.item() * img_t.size(0)
+                ep_loss += loss.item() * 1 * img_t.size(0)  # No gradient accumulation
+                ep_iou += iou * img_t.size(0)
+                ep_dice += dice * img_t.size(0)
+                ep_tp += tp
+                ep_tn += tn
+                ep_fp += fp
+                ep_fn += fn
                 train_samples += img_t.size(0)
 
-        # Validation
+        # Validation with threshold search every 5 epochs
         net.eval()
         val_loss = 0.0
         val_iou = 0.0
         val_dice = 0.0
+        val_tp = val_tn = val_fp = val_fn = 0.0
         val_samples = 0
+        
+        # Find best threshold every 5 epochs or on first epoch
+        if ep == 1 or ep % 5 == 0:
+            _log_info("U²-Net Training", f"Searching for best threshold at epoch {ep}...")
+            best_threshold, threshold_metrics = find_best_threshold(net, val_loader, device)
+            metrics_summary['best_threshold'] = best_threshold
+            metrics_summary[f'threshold_metrics_epoch_{ep}'] = threshold_metrics
         
         with torch.no_grad():
             for img_t, mask_t, _ in val_loader:
@@ -185,21 +414,17 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
                     logits = outputs[0] if isinstance(outputs, tuple) else outputs
                     loss = loss_fn(logits, mask_t)
 
-                # Calculate metrics
+                # Calculate metrics with best threshold
                 probs = torch.sigmoid(logits)
-                pred_mask = (probs > 0.5).float()
-
-                # IoU calculation
-                intersection = (pred_mask * mask_t).sum(dim=(2, 3))
-                union = pred_mask.sum(dim=(2, 3)) + mask_t.sum(dim=(2, 3)) - intersection
-                iou = (intersection / (union + 1e-8)).mean()
-
-                # Dice calculation
-                dice = (2 * intersection / (pred_mask.sum(dim=(2, 3)) + mask_t.sum(dim=(2, 3)) + 1e-8)).mean()
+                iou, dice, tp, tn, fp, fn = calculate_metrics(probs, mask_t, best_threshold)
 
                 val_loss += loss.item() * img_t.size(0)
-                val_iou += iou.item() * img_t.size(0)
-                val_dice += dice.item() * img_t.size(0)
+                val_iou += iou * img_t.size(0)
+                val_dice += dice * img_t.size(0)
+                val_tp += tp
+                val_tn += tn
+                val_fp += fp
+                val_fn += fn
                 val_samples += img_t.size(0)
 
         # Average metrics
@@ -209,6 +434,12 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
         val_loss /= max(1, val_samples)
         val_iou /= max(1, val_samples)
         val_dice /= max(1, val_samples)
+        
+        # Confusion matrix metrics
+        train_precision = ep_tp / (ep_tp + ep_fp + 1e-8)
+        train_recall = ep_tp / (ep_tp + ep_fn + 1e-8)
+        val_precision = val_tp / (val_tp + val_fp + 1e-8)
+        val_recall = val_tp / (val_tp + val_fn + 1e-8)
 
         # Store metrics
         epochs.append(ep)
@@ -219,17 +450,44 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
         train_dices.append(ep_dice)
         val_dices.append(val_dice)
 
-        # Log progress
-        _log_info("U²-Net Training", f"Epoch {ep}: Train Loss: {ep_loss:.4f}, Val Loss: {val_loss:.4f}, IoU: {val_iou:.4f}, Dice: {val_dice:.4f}")
+        # Log progress with confusion matrix and curriculum phase
+        _log_info("U²-Net Training", f"Epoch {ep}: Train Loss: {ep_loss:.4f}, Val Loss: {val_loss:.4f}")
+        _log_info("U²-Net Training", f"Train IoU: {ep_iou:.4f}, Dice: {ep_dice:.4f}, Precision: {train_precision:.4f}, Recall: {train_recall:.4f}")
+        _log_info("U²-Net Training", f"Val IoU: {val_iou:.4f}, Dice: {val_dice:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
+        _log_info("U²-Net Training", f"Best Threshold: {best_threshold:.3f}, Curriculum Phase: {curriculum_phase}")
         
-        # Save best model
-        if val_loss < best_val:
-            best_val = val_loss
+        # Save best model based on validation dice
+        if val_dice > best_val:
+            best_val = val_dice
             torch.save(net.state_dict(), best_path)
-            _log_success("U²-Net Training", f"New best model saved: {best_path}")
+            _log_success("U²-Net Training", f"New best model saved: {best_path} (Dice: {val_dice:.4f})")
     
         # Save last model
         torch.save(net.state_dict(), last_path)
+        
+        # Save overlay images every 10 epochs
+        if (ep % 10 == 0 or ep == CFG.u2_epochs):
+            try:
+                _save_overlay_images(net, val_loader, device, run_dir, ep, best_threshold)
+            except Exception as e:
+                _log_warning("U²-Net Training", f"Failed to save overlay images: {e}")
+
+    # Update metrics summary with final results
+    metrics_summary.update({
+        'final_train_iou': train_ious[-1] if train_ious else 0,
+        'final_val_iou': val_ious[-1] if val_ious else 0,
+        'final_train_dice': train_dices[-1] if train_dices else 0,
+        'final_val_dice': val_dices[-1] if val_dices else 0,
+        'best_val_dice': best_val,
+        'total_epochs': CFG.u2_epochs,
+        'training_time': time.time() - start_time
+    })
+    
+    # Save metrics summary
+    metrics_path = os.path.join(run_dir, "metrics_summary.json")
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics_summary, f, indent=2)
+    _log_success("U²-Net Training", f"Metrics summary saved: {metrics_path}")
 
     # Generate comprehensive metrics
     training_metrics = {
@@ -239,12 +497,14 @@ def train_u2net(pipeline, continue_if_exists: bool = True, resume_from: str = No
         'val_iou': val_ious,
         'train_dice': train_dices,
         'val_dice': val_dices,
-        'epochs': epochs
+        'epochs': epochs,
+        'best_threshold': best_threshold,
+        'pos_weight': pos_weight.item()
     }
 
     _log_info("U²-Net Training", "Generating training metrics...")
     try:
-        _generate_u2net_metrics(run_dir, training_metrics, net, val_loader, device)
+        _generate_u2net_metrics(run_dir, training_metrics, net, val_loader, train_loader, device)
     except Exception as e:
         _log_error("U²-Net Training", f"Failed to generate metrics: {e}")
         
@@ -554,7 +814,7 @@ def _generate_yolo_metrics(save_dir: str, results):
         _log_error("YOLO Metrics", f"Failed to generate metrics: {e}")
 
 
-def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loader, device):
+def _generate_u2net_metrics(run_dir: str, training_metrics: dict, model, val_loader, train_loader, device):
     """Generate U²-Net training metrics"""
     from sections_a.a_config import _log_info, _log_success, _log_error
 

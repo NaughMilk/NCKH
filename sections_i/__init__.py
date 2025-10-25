@@ -27,7 +27,9 @@ from .i_handlers import (
 
 from .i_training import (
     train_sdy_btn,
-    train_u2net_btn
+    train_u2net_btn,
+    update_yolo_config_only,
+    update_u2net_config_only
 )
 
 from .i_utils import (
@@ -58,6 +60,8 @@ __all__ = [
     # Training
     "train_sdy_btn",
     "train_u2net_btn",
+    "update_yolo_config_only",
+    "update_u2net_config_only",
     
     # Utils
     "decode_qr_info"

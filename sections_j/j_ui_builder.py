@@ -168,8 +168,7 @@ def build_ui():
                 training_components = create_training_components()
                 (yolo_epochs, yolo_batch, yolo_imgsz, yolo_lr0, yolo_lrf, yolo_weight_decay,
                  yolo_mosaic, yolo_flip, yolo_hsv, yolo_workers, yolo_update_config_btn, yolo_train_btn, sdy_status, sdy_weights, sdy_folder,
-                 u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
-                 u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight,
+                 u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant, u2_inference_threshold,
                  u2_update_config_btn, u2_train_btn, u2_status, u2_weights, u2_folder, u2_onnx) = training_components
                 
                 # Training Event Handlers
@@ -188,7 +187,7 @@ def build_ui():
                 u2_update_config_btn.click(
                     fn=update_u2net_config_only,
                     inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
-                           u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight],
+                           u2_inference_threshold],
                     outputs=[u2_status]
                 )
                 
@@ -202,7 +201,7 @@ def build_ui():
                 u2_train_btn.click(
                     fn=train_u2_fn,
                     inputs=[u2_epochs, u2_batch, u2_imgsz, u2_lr, u2_optimizer, u2_loss, u2_workers, u2_variant,
-                           u2_amp, u2_weight_decay, u2_use_edge_loss, u2_edge_loss_weight],
+                           u2_inference_threshold],
                     outputs=[u2_status, u2_weights, u2_folder, u2_onnx]
                 )
             
@@ -225,14 +224,21 @@ def build_ui():
                 warehouse_components = create_warehouse_components()
                 (yolo_model_file, u2net_model_file, upload_models_btn, model_upload_status,
                  warehouse_cam, warehouse_upload, enable_deskew, deskew_method, enable_force_rectangle,
-                 check_btn, warehouse_gallery, warehouse_log) = warehouse_components
+                 warehouse_rect_padding, check_btn, warehouse_gallery, warehouse_log) = warehouse_components
                 
                 # Model Upload Event Handler
                 def handle_model_upload(yolo_file, u2net_file):
-                    """Handle model file uploads"""
-                    from sections_i.i_handlers import handle_warehouse_model_upload
-                    success, message = handle_warehouse_model_upload(yolo_file, u2net_file)
-                    return message
+                    """Handle model file uploads - just validate files"""
+                    if yolo_file is None or u2net_file is None:
+                        return "[ERROR] Please upload both YOLO and U²-Net models"
+                    
+                    yolo_path = yolo_file.name if hasattr(yolo_file, 'name') else str(yolo_file)
+                    u2net_path = u2net_file.name if hasattr(u2net_file, 'name') else str(u2net_file)
+                    
+                    if not os.path.exists(yolo_path) or not os.path.exists(u2net_path):
+                        return "[ERROR] Model files not found. Please check file paths."
+                    
+                    return f"✅ Models ready!\nYOLO: {os.path.basename(yolo_path)}\nU²-Net: {os.path.basename(u2net_path)}"
                 
                 upload_models_btn.click(
                     fn=handle_model_upload,
@@ -241,42 +247,30 @@ def build_ui():
                 )
                 
                 # Warehouse Check Event Handlers
-                def handle_warehouse_check(cam_img, upload_img, deskew_enabled, deskew_method, force_rectangle):
-                    """Handle warehouse check with either camera or upload"""
+                def handle_warehouse_check(cam_img, upload_img, deskew_enabled, deskew_method, force_rectangle, rect_padding, yolo_file, u2net_file):
+                    """Handle warehouse check with uploaded models from anywhere"""
                     input_img = cam_img if cam_img is not None else upload_img
                     if input_img is None:
                         return None, "[ERROR] No image provided"
                     
-                    # Use uploaded models if available
-                    yolo_path = None
-                    u2net_path = None
-                    
-                    # Try to find latest trained models
-                    # Look for latest YOLO model in runs_sdy
-                    runs_dir = os.path.join(CFG.project_dir, "runs_sdy")
-                    yolo_path = None
-                    if os.path.exists(runs_dir):
-                        for run_folder in sorted(os.listdir(runs_dir), reverse=True):
-                            if run_folder.startswith("train_"):
-                                weights_dir = os.path.join(runs_dir, run_folder, "weights")
-                                best_pt = os.path.join(weights_dir, "best.pt")
-                                if os.path.exists(best_pt):
-                                    yolo_path = best_pt
-                                    break
-                    
-                    # Look for latest U2Net model
-                    u2net_path = os.path.join(CFG.project_dir, "u2_runs", "u2net_best.pth")
-                    
-                    if not os.path.exists(yolo_path) or not os.path.exists(u2net_path):
+                    if yolo_file is None or u2net_file is None:
                         return None, "[ERROR] Please upload both YOLO and U²-Net models first"
                     
-                    # FIXED: Pass model paths to handler
-                    vis_images, log_msg, _ = handle_warehouse_upload(input_img, yolo_path, u2net_path, deskew_enabled, deskew_method, force_rectangle)
+                    # Get file paths from uploaded files
+                    yolo_path = yolo_file.name if hasattr(yolo_file, 'name') else str(yolo_file)
+                    u2net_path = u2net_file.name if hasattr(u2net_file, 'name') else str(u2net_file)
+                    
+                    # Verify files exist
+                    if not os.path.exists(yolo_path) or not os.path.exists(u2net_path):
+                        return None, "[ERROR] Model files not found. Please check file paths."
+                    
+                    # Pass model paths to handler
+                    vis_images, log_msg, _ = handle_warehouse_upload(input_img, yolo_path, u2net_path, deskew_enabled, deskew_method, force_rectangle, rect_padding)
                     return vis_images, log_msg
                 
                 check_btn.click(
                     fn=handle_warehouse_check,
-                    inputs=[warehouse_cam, warehouse_upload, enable_deskew, deskew_method, enable_force_rectangle],
+                    inputs=[warehouse_cam, warehouse_upload, enable_deskew, deskew_method, enable_force_rectangle, warehouse_rect_padding, yolo_model_file, u2net_model_file],
                     outputs=[warehouse_gallery, warehouse_log]
                 )
             

@@ -3,24 +3,16 @@ import cv2
 import torch
 import numpy as np
 import random
-from typing import Optional
 
 class U2PairDataset(torch.utils.data.Dataset):
-    """Dataset for U²-Net training"""
+    """Dataset for U²-Net training - EXACT COPY from NCC_PIPELINE_NEW.py"""
     def __init__(self, root: str, split: str = "train", imgsz: int = 384):
-        # Import log functions from other modules (will be available after all sections are loaded)
-        try:
-            from sections_a.a_config import _log_info
-        except ImportError:
-            # Fallback if log functions not available yet
-            def _log_info(context, message): print(f"[INFO] {context}: {message}")
-        
         self.img_dir = os.path.join(root, "images", split)
         self.mask_dir = os.path.join(root, "masks", split)
         self.files = [f for f in os.listdir(self.img_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
         self.imgsz = imgsz
         self.split = split
-        _log_info("U2Dataset", f"Loaded {len(self.files)} samples from {split}")
+        print(f"[INFO] U2Dataset: Loaded {len(self.files)} samples from {split}")
     
     def __len__(self):
         return len(self.files)
@@ -64,6 +56,7 @@ class U2PairDataset(torch.utils.data.Dataset):
         # Apply edge augmentation for training
         img, mask = self._apply_edge_augmentation(img, mask)
         
+        # Normalize
         img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
         mask_t = torch.from_numpy((mask > 127).astype(np.float32)).unsqueeze(0)
         

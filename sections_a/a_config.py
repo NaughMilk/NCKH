@@ -156,22 +156,42 @@ class Config:
     yolo_hsv: bool = True
     yolo_workers: int = 8
     
-    u2_variant: str = "u2net"
-    u2_epochs: int = 100
-    u2_batch: int = 2
-    u2_imgsz: int = 320
-    u2_lr: float = 0.00001
-    u2_optimizer: str = "AdamW"
-    u2_loss: str = "BCEDice"
-    u2_workers: int = 4
-    u2_amp: bool = False
-    u2_weight_decay: float = 0.0001
-    u2_use_edge_loss: bool = False
-    u2_edge_loss_weight: float = 0.5
+    # U²-Net training - EXACT COPY from NCC_PIPELINE_NEW.py
+    u2_variant: str = "u2netp"
+    u2_epochs: int = 80
+    u2_imgsz: int = 384
+    u2_batch: int = 4
+    u2_lr: float = 1e-3
+    u2_weight_decay: float = 1e-4
+    u2_runs_dir: str = "runs_u2net"
     u2_best_name: str = "u2net_best.pth"
     u2_last_name: str = "u2net_last.pth"
-    u2_inference_threshold: float = 0.5
-    u2_use_v2_pipeline: bool = True
+    
+    # U²-Net inference
+    u2_inference_threshold: float = 0.5  # Giảm xuống 0.5 để segment cả hộp
+    u2_use_v2_pipeline: bool = True      # Sử dụng V2 pipeline
+    
+    # U²-Net training optimization
+    u2_use_edge_loss: bool = True        # Sử dụng edge loss
+    u2_edge_loss_weight: float = 0.1     # Weight cho edge loss
+    
+    # YOLO Training Hyperparams (MỚI)
+    yolo_epochs: int = 60
+    yolo_batch: int = 16
+    yolo_imgsz: int = 640
+    yolo_lr0: float = 0.01
+    yolo_lrf: float = 0.01
+    yolo_weight_decay: float = 0.0005
+    yolo_mosaic: bool = True
+    yolo_flip: bool = True
+    yolo_hsv: bool = True
+    yolo_workers: int = 8
+    
+    # U²-Net Training Hyperparams (MỚI)
+    u2_optimizer: str = "AdamW"  # AdamW, SGD
+    u2_loss: str = "BCEDice"  # BCE, Dice, BCEDice
+    u2_workers: int = 4
+    u2_amp: bool = True
     
     # Deskew parameters
     enable_deskew: bool = False
@@ -182,7 +202,6 @@ class Config:
     gpu_memory_fraction: float = 0.8
     
     # Training directories
-    u2_runs_dir: str = "u2_runs"
     yolo_runs_dir: str = "yolo_runs"
     
     # Unique Box Name Generation
@@ -193,6 +212,9 @@ class Config:
     # Warehouse Deskew
     enable_deskew: bool = False
     deskew_method: str = "minAreaRect"  # minAreaRect, PCA, heuristic
+    
+    # Warehouse Rectangle Padding (MỚI)
+    warehouse_rect_padding: int = 10  # Padding pixel xung quanh rectangle
     
     # Post-processing
     use_shadow_robust_edges: bool = True  # use shadow robust edge detection

@@ -13,7 +13,7 @@ from PIL import Image
 from sections_a.a_config import CFG, _log_info, _log_success, _log_warning, _log_error
 from sections_e.e_qr_utils import parse_qr_payload, validate_qr_yolo_match
 from sections_h.h_deskew import deskew_box_roi
-from sections_h.h_mask_processing import _process_enhanced_mask, _process_enhanced_mask_v2, _force_rectangle_mask
+from sections_h.h_mask_processing import _process_enhanced_mask, _process_enhanced_mask_v2, _process_enhanced_mask_v3, _force_rectangle_mask
 from sections_h.h_model_loading import load_warehouse_yolo, load_warehouse_u2net
 
 # Import global model variables
@@ -35,7 +35,7 @@ class QR:
         return None, None
 
 
-def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2net_model_path: str = None, enable_deskew: bool = False, enable_force_rectangle: bool = False) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
+def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2net_model_path: str = None, enable_deskew: bool = False, enable_force_rectangle: bool = False, rect_padding: int = 10) -> Tuple[Optional[List], Optional[str], Optional[Dict]]:
     """
     Pipeline kiểm tra kho - CHỈ DÙNG YOLO MODEL ĐÃ TRAIN:
     1. Đọc QR
@@ -225,7 +225,7 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
         _log_info("Color Debug", f"YOLO PIL Image created - mode: {vis_yolo_pil.mode}, size: {vis_yolo_pil.size}")
         results["visualizations"].append((vis_yolo_pil, "YOLO Detection"))
         
-        # Step 3: Segmentation on box region (only if validation passed)
+        # Step 3: Segmentation on full image (if validation passed)
         if box_bbox is not None and validation_result["passed"]:
             seg_start = time.time()
             x1, y1, x2, y2 = box_bbox
@@ -233,9 +233,8 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
             # Use U²-Net for segmentation on full image
             _log_info("Warehouse Check", "Using U²-Net for segmentation on full image")
             
-            # Convert full image to RGB
+            # Convert BGR to RGB for U²-Net
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            H_full, W_full = frame_rgb.shape[:2]
             
             # Run U²-Net inference on full image
             img_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
@@ -252,9 +251,22 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
                 # U2Net returns (d0, d1, d2, d3, d4, d5, d6) - use main output d0
                 logits = outputs[0] if isinstance(outputs, tuple) else outputs
                 probs = torch.sigmoid(logits)
+                
+                # Debug: Log raw probabilities
+                max_prob = probs.max().item()
+                min_prob = probs.min().item()
+                mean_prob = probs.mean().item()
+                _log_info("U²-Net Debug", f"Raw probs - Max: {max_prob:.4f}, Min: {min_prob:.4f}, Mean: {mean_prob:.4f}")
+                
+                # Test với nhiều threshold để debug
+                for thresh in [0.1, 0.2, 0.3, 0.4, 0.5]:
+                    test_mask = (probs > thresh).float()
+                    pixels = test_mask.sum().item()
+                    _log_info("U²-Net Debug", f"Threshold {thresh}: {pixels} pixels")
+                
                 probs_resized = F.interpolate(
                     probs,
-                    size=(H_full, W_full),
+                    size=(frame_rgb.shape[0], frame_rgb.shape[1]),
                     mode='bilinear',
                     align_corners=False
                 )
@@ -262,53 +274,62 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
                 
                 # Log mask stats before processing
                 mask_pixels_before = np.sum(full_mask > 0)
-                _log_info("Mask Debug", f"U2Net raw mask: {mask_pixels_before} pixels ({mask_pixels_before/(full_mask.shape[0]*full_mask.shape[1])*100:.1f}% of full image)")
+                _log_info("Mask Debug", f"U2Net raw full mask: {mask_pixels_before} pixels ({mask_pixels_before/(full_mask.shape[0]*full_mask.shape[1])*100:.1f}% of image)")
                 
-                # Enhanced mask processing pipeline
+                # Enhanced mask processing pipeline on full image (V3 with background noise removal)
                 if CFG.u2_use_v2_pipeline:
-                    full_mask = _process_enhanced_mask_v2(full_mask, CFG)
+                    full_mask = _process_enhanced_mask_v3(full_mask, CFG)  # Use V3 for better noise removal
                 else:
                     full_mask = _process_enhanced_mask(full_mask, CFG)
                 
                 # Log mask stats after processing
                 mask_pixels_after = np.sum(full_mask > 0)
-                _log_info("Mask Debug", f"After processing: {mask_pixels_after} pixels ({mask_pixels_after/(full_mask.shape[0]*full_mask.shape[1])*100:.1f}% of full image)")
+                _log_info("Mask Debug", f"After processing: {mask_pixels_after} pixels ({mask_pixels_after/(full_mask.shape[0]*full_mask.shape[1])*100:.1f}% of image)")
                 
-                # Extract ROI mask from full mask
-                roi_mask = full_mask[y1:y2, x1:x2]
+                # Full mask is already created above
             
             seg_time = time.time() - seg_start
             _log_info("Warehouse Timing", f"Segmentation: {seg_time*1000:.1f}ms")
             
-            # Step 4: Deskew if enabled
+            # Step 4: Deskew if enabled (on full image)
             deskew_info = {"angle": 0, "method": "disabled"}
             if enable_deskew:
                 deskew_start = time.time()
-                roi_deskewed, roi_mask_deskewed, deskew_info = deskew_box_roi(
-                    roi_bgr, roi_mask, CFG.deskew_method
+                # Deskew on full image
+                frame_deskewed, full_mask_deskewed, deskew_info = deskew_box_roi(
+                    frame_bgr, full_mask, CFG.deskew_method
                 )
                 deskew_time = time.time() - deskew_start
                 _log_info("Warehouse Timing", f"Deskew: {deskew_time*1000:.1f}ms")
                 if deskew_info.get("angle", 0) != 0:
-                    roi_bgr = roi_deskewed
-                    roi_mask = roi_mask_deskewed
-                    roi_rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+                    frame_bgr = frame_deskewed
+                    full_mask = full_mask_deskewed
+                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             
-            # Step 5: Tạo hình chữ nhật hoàn hảo từ mask gốc với adaptive expansion (nếu được bật)
+            # Step 5: Force Rectangular Mask (if enabled)
             rectangle_info = {"applied": False, "original_size": None, "rectangle_size": None}
-            if enable_force_rectangle and roi_mask is not None and np.any(roi_mask > 0):
+            _log_info("Force Rectangle Debug", f"enable_force_rectangle: {enable_force_rectangle}")
+            _log_info("Force Rectangle Debug", f"full_mask is not None: {full_mask is not None}")
+            if full_mask is not None:
+                _log_info("Force Rectangle Debug", f"full_mask has pixels: {np.any(full_mask > 0)}")
+                _log_info("Force Rectangle Debug", f"full_mask shape: {full_mask.shape}")
+                _log_info("Force Rectangle Debug", f"full_mask pixel count: {np.count_nonzero(full_mask)}")
+            
+            if enable_force_rectangle and full_mask is not None and np.any(full_mask > 0):
                 rectangle_start = time.time()
-                # Tạo hình chữ nhật hoàn hảo từ mask gốc với expand thông minh
-                roi_mask = _force_rectangle_mask(roi_mask, expand_factor=1.2)
+                _log_info("Force Rectangle Debug", "Applying force rectangle...")
+                # Apply force rectangle to full mask with custom padding
+                full_mask = _force_rectangle_mask(full_mask, expand_factor=1.0 + (rect_padding / 100.0), padding_px=rect_padding)
                 rectangle_time = time.time() - rectangle_start
                 _log_info("Warehouse Timing", f"Perfect rectangle creation: {rectangle_time*1000:.1f}ms")
                 _log_success("Warehouse Check", f"Created perfect rectangle from original mask")
                 rectangle_info["applied"] = True
             elif not enable_force_rectangle:
                 _log_info("Warehouse Check", "Force rectangle disabled - using original mask")
+            else:
+                _log_info("Force Rectangle Debug", "Force rectangle conditions not met")
             
-            # Create full-size mask for visualization
-            # U²-Net: sử dụng full mask đã có
+            # Store full mask
             results["u2net_mask"] = full_mask
             results["deskew_info"] = deskew_info
             results["rectangle_info"] = rectangle_info
@@ -337,13 +358,13 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
             model_name = "U²-Net Segmentation"
             results["visualizations"].append((vis_u2net_pil, model_name))
             
-            # Chỉ hiển thị deskewed ROI nếu deskew được bật và có góc xoay
+            # Chỉ hiển thị deskewed full image nếu deskew được bật và có góc xoay
             if enable_deskew and deskew_info.get("angle", 0) != 0:
-                vis_deskewed = roi_rgb.copy()
-                colored_roi_mask = np.zeros_like(roi_rgb)
-                colored_roi_mask[roi_mask > 0] = [0, 255, 0]
-                vis_deskewed = cv2.addWeighted(vis_deskewed, 0.7, colored_roi_mask, 0.3, 0)
-                results["visualizations"].append((vis_deskewed, "Deskewed ROI"))
+                vis_deskewed = frame_rgb.copy()
+                colored_full_mask = np.zeros_like(frame_rgb)
+                colored_full_mask[full_mask > 0] = [0, 255, 0]
+                vis_deskewed = cv2.addWeighted(vis_deskewed, 0.7, colored_full_mask, 0.3, 0)
+                results["visualizations"].append((vis_deskewed, "Deskewed Full Image"))
             
             # Bỏ ảnh Perfect Rectangle ROI - chỉ giữ YOLO và U²-Net
         else:
@@ -396,7 +417,9 @@ def warehouse_check_frame(frame_bgr: np.ndarray, yolo_model_path: str = None, u2
         
         if results["u2net_mask"] is not None:
             # FIXED: Use count_nonzero instead of sum() for mask pixel count
-            log_msg += f"\n🎯 U²-Net Segmentation: {np.count_nonzero(results['u2net_mask'])} pixels\n"
+            mask_pixels = np.count_nonzero(results['u2net_mask'])
+            total_pixels = results['u2net_mask'].shape[0] * results['u2net_mask'].shape[1]
+            log_msg += f"\n🎯 U²-Net Full Image Segmentation: {mask_pixels} pixels ({mask_pixels/total_pixels*100:.1f}% of image)\n"
         
         if results.get("deskew_info") and results["deskew_info"].get("angle", 0) != 0:
             log_msg += f"🔄 Deskew Applied: {results['deskew_info']['angle']:.1f}° ({results['deskew_info']['method']})\n"
